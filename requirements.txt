@@ -1,6 +1,5 @@
 
 streamlit
-PyMuPDF
 Pillow
 pandas
 requests
