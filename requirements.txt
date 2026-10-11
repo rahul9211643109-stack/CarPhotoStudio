@@ -1,0 +1,11 @@
+
+streamlit
+pymupdf
+Pillow
+pandas
+requests
+openai
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
