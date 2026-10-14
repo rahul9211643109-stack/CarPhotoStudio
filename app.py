@@ -9,15 +9,14 @@ from pathlib import Path
 import fitz
 import streamlit as st
 from PIL import Image
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+
+APP_DIR = Path(__file__).resolve().parent
+BRAND_LOGO_PATH = APP_DIR / "CarPhotoStudio_Logo_Transparent.png"
+FAVICON_PATH = APP_DIR / "CarPhotoStudio_Favicon.png"
 
 st.set_page_config(
     page_title="CarPhotoStudio",
-    page_icon="🚗",
+    page_icon=str(FAVICON_PATH) if FAVICON_PATH.is_file() else "🚗",
     layout="wide",
 )
 
@@ -69,11 +68,11 @@ st.markdown(
     }
     .cps-brand-left { display:flex; align-items:center; gap:.9rem; min-width:0; }
     .cps-logo-mark {
-        width: 50px; height: 50px; display:flex; align-items:center; justify-content:center;
-        flex: 0 0 50px; border-radius: 15px; font-size: 1.7rem;
-        background: linear-gradient(145deg, rgba(45,212,191,.23), rgba(13,148,136,.06));
-        border: 1px solid rgba(45,212,191,.32);
+        width: 58px; height: 58px; display:flex; align-items:center; justify-content:center;
+        flex: 0 0 58px; border-radius: 15px; font-size: 1.7rem; overflow:hidden;
+        background: rgba(255,255,255,.96); border: 1px solid rgba(45,212,191,.32);
     }
+    .cps-logo-mark img { width: 100%; height: 100%; object-fit: contain; padding: 3px; }
     .cps-overline { font-size: .66rem; letter-spacing: .19em; color: var(--cps-teal); font-weight: 800; }
     .cps-brand-title { font-size: 1.55rem; font-weight: 850; color: #f4f9fc; line-height: 1.18; letter-spacing: -.045em; }
     .cps-brand-title span { color: var(--cps-teal); }
@@ -132,24 +131,42 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-CLIENT_FILE = "client_secret.json"
-TOKEN_FILE = "token.json"
+# Google OAuth: Render Secret Files path first; local file fallback for VS Code.
+CLIENT_FILE = "/etc/secrets/client_secret.json"
+LOCAL_CLIENT_FILE = str(APP_DIR / "client_secret.json")
+TOKEN_FILE = str(APP_DIR / "token.json")
+APP_URL = os.environ.get("APP_URL", "https://carphotostudio.onrender.com/")
 AI_USAGE_FILE = Path(__file__).resolve().parent / "ai_usage.json"
 AI_MONTHLY_IMAGE_CAP = 10
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
+# Use a downsized copy in the header to keep reruns responsive.
+if BRAND_LOGO_PATH.is_file():
+    try:
+        with Image.open(BRAND_LOGO_PATH) as _brand_img:
+            _brand_img = _brand_img.convert("RGBA")
+            _brand_img.thumbnail((256, 256), Image.Resampling.LANCZOS)
+            _brand_buf = io.BytesIO()
+            _brand_img.save(_brand_buf, format="PNG", optimize=True)
+        _brand_logo_b64 = base64.b64encode(_brand_buf.getvalue()).decode("ascii")
+        _brand_mark_html = f'<img src="data:image/png;base64,{_brand_logo_b64}" alt="CarPhotoStudio logo" />'
+    except Exception:
+        _brand_mark_html = "🚘"
+else:
+    _brand_mark_html = "🚘"
+
 st.markdown(
-    """
-    <div class="cps-brandbar">
-      <div class="cps-brand-left">
-        <div class="cps-logo-mark">🚘</div>
+    f"""
+    <div class=\"cps-brandbar\">
+      <div class=\"cps-brand-left\">
+        <div class=\"cps-logo-mark\">{_brand_mark_html}</div>
         <div>
-          <div class="cps-overline">SHOWROOM WORKSPACE</div>
-          <div class="cps-brand-title">CarPhoto<span>Studio</span></div>
-          <div class="cps-brand-subtitle">PDF tools · AI photo studio · Listings · Drive</div>
+          <div class=\"cps-overline\">SHOWROOM WORKSPACE</div>
+          <div class=\"cps-brand-title\">CarPhoto<span>Studio</span></div>
+          <div class=\"cps-brand-subtitle\">PDF tools · AI photo studio · Listings · Drive</div>
         </div>
       </div>
-      <div class="cps-live-pill">● WORKSPACE READY</div>
+      <div class=\"cps-live-pill\">● WORKSPACE READY</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -262,7 +279,9 @@ def record_ai_attempt():
 
 
 def prepare_image_for_edit(raw_bytes):
-    """Normalize an input image to JPEG and limit input dimensions."""
+    """Normalize a source image to JPEG and limit dimensions/file size before paid editing."""
+    if not raw_bytes or len(raw_bytes) > 20 * 1024 * 1024:
+        raise ValueError("Photo empty hai ya 20 MB se badi hai. Chhoti JPG/PNG choose karo.")
     with Image.open(io.BytesIO(raw_bytes)) as opened:
         opened = opened.convert("RGB")
         opened.thumbnail((1536, 1536))
@@ -365,41 +384,127 @@ def extract_pdf_embedded_car_photos(pdf_bytes, pdf_name):
                     })
                 except Exception:
                     continue
+        if not extracted:
+            # Fallback for flattened/vector PDFs where page.get_images() returns no large photos.
+            # These are whole-page renders, not isolated car photos, so the UI labels them accordingly.
+            for page_num in range(min(len(doc), 30)):
+                try:
+                    page_obj = doc[page_num]
+                    pix = page_obj.get_pixmap(matrix=fitz.Matrix(1.4, 1.4), alpha=False)
+                    if pix.width < 400 or pix.height < 250:
+                        continue
+                    im = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    buf = io.BytesIO()
+                    im.save(buf, format="JPEG", quality=90, optimize=True)
+                    extracted.append({
+                        "label": f"{Path(pdf_name).stem}_page{page_num + 1}_rendered.jpg",
+                        "bytes": buf.getvalue(),
+                        "rendered_page": True,
+                    })
+                except Exception:
+                    continue
     finally:
         doc.close()
     return extracted
 
 
-def get_google_credentials():
-    """Load saved login or start Google OAuth."""
-    credentials = None
+def get_client_secret_file():
+    """Return the Google OAuth client JSON path for Render or local development."""
+    if os.path.isfile(CLIENT_FILE):
+        return CLIENT_FILE
+    if os.path.isfile(LOCAL_CLIENT_FILE):
+        return LOCAL_CLIENT_FILE
+    return None
 
-    if os.path.exists(TOKEN_FILE):
-        credentials = Credentials.from_authorized_user_file(
-            TOKEN_FILE, SCOPES
+
+def make_google_oauth_flow(state=None):
+    """Create a web-server OAuth flow for Streamlit/Render."""
+    try:
+        from google_auth_oauthlib.flow import Flow
+    except ImportError as exc:
+        raise RuntimeError(
+            "Google Drive packages missing hain. requirements.txt mein "
+            "google-auth-oauthlib aur google-api-python-client install karo."
+        ) from exc
+    secret_path = get_client_secret_file()
+    if not secret_path:
+        raise FileNotFoundError(
+            "Google OAuth client file nahi mili. Render > Environment > Secret Files "
+            "mein /etc/secrets/client_secret.json add karo."
         )
+    flow = Flow.from_client_secrets_file(secret_path, scopes=SCOPES, state=state)
+    flow.redirect_uri = APP_URL
+    return flow
 
+
+def process_google_oauth_callback():
+    """Finish the Google redirect when the browser returns to the app."""
+    try:
+        params = st.query_params
+        code = params.get("code")
+        error = params.get("error")
+        if error:
+            st.error(f"Google login cancel/failed: {error}")
+            params.clear()
+            return
+        if not code:
+            return
+        saved_state = st.session_state.get("google_oauth_state")
+        returned_state = params.get("state")
+        if not saved_state or not returned_state or saved_state != returned_state:
+            st.error(
+                "Google login state match nahi hua. Google Drive page par jaakar "
+                "Connect Google Account dobara dabao."
+            )
+            params.clear()
+            st.session_state.pop("google_oauth_state", None)
+            return
+        flow = make_google_oauth_flow(state=saved_state)
+        flow.fetch_token(code=code)
+        st.session_state.google_credentials = flow.credentials
+        st.session_state.google_oauth_state = None
+        params.clear()
+        try:
+            service = get_drive_service()
+            about = service.about().get(fields="user(displayName,emailAddress)").execute()
+            st.session_state.google_email = about.get("user", {}).get(
+                "emailAddress", "Google account connected"
+            )
+        except Exception:
+            st.session_state.google_email = "Google account connected"
+        st.success("Google account connect ho gaya!")
+    except Exception as exc:
+        st.error(f"Google OAuth callback failed: {exc}")
+
+
+def get_google_credentials():
+    """Get current session credentials; OAuth is started by the UI."""
+    try:
+        from google.auth.transport.requests import Request
+    except ImportError as exc:
+        raise RuntimeError(
+            "Google Drive packages missing hain. VS Code Terminal mein: "
+            "python -m pip install -r requirements.txt"
+        ) from exc
+    credentials = st.session_state.get("google_credentials")
     if credentials and credentials.expired and credentials.refresh_token:
         credentials.refresh(Request())
-
+        st.session_state.google_credentials = credentials
     if not credentials or not credentials.valid:
-        if not os.path.exists(CLIENT_FILE):
-            raise FileNotFoundError(
-                "client_secret.json app.py ke saath nahi mili."
-            )
-
-        flow = InstalledAppFlow.from_client_secrets_file(
-            CLIENT_FILE, SCOPES
+        raise RuntimeError(
+            "Google account connect nahi hai. Google Drive page par "
+            "'Connect Google Account' dabao aur Google login complete karo."
         )
-        credentials = flow.run_local_server(port=0)
-
-        with open(TOKEN_FILE, "w", encoding="utf-8") as token:
-            token.write(credentials.to_json())
-
     return credentials
 
 
 def get_drive_service():
+    try:
+        from googleapiclient.discovery import build
+    except ImportError as exc:
+        raise RuntimeError(
+            "Google Drive package missing hai. VS Code Terminal mein: python -m pip install -r requirements.txt"
+        ) from exc
     credentials = get_google_credentials()
     return build("drive", "v3", credentials=credentials)
 
@@ -504,7 +609,37 @@ elif page == "Upload PDF":
                         except Exception:
                             continue
 
-            doc.close()
+            # Some PDFs flatten each page into a single image/vector layer. If no embedded
+            # images were extractable, render a limited number of pages as JPG previews.
+            if not extracted:
+                doc.close()
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                fallback_limit = min(len(doc), 30)
+                for page_idx in range(fallback_limit):
+                    try:
+                        page_obj = doc[page_idx]
+                        pix = page_obj.get_pixmap(matrix=fitz.Matrix(1.4, 1.4), alpha=False)
+                        if pix.width < 400 or pix.height < 250:
+                            continue
+                        rendered = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        output = io.BytesIO()
+                        rendered.save(output, format="JPEG", quality=92, optimize=True)
+                        extracted.append({
+                            "name": f"pdf_page_{page_idx + 1}_rendered.jpg",
+                            "bytes": output.getvalue(),
+                            "page": page_idx + 1,
+                            "width": rendered.width,
+                            "height": rendered.height,
+                            "rendered_page": True,
+                        })
+                    except Exception:
+                        continue
+                doc.close()
+                if extracted:
+                    st.info("PDF mein alag embedded photos nahi mili; fallback mein PDF pages ko JPG copies ke roop mein render kiya gaya hai. In pages mein text/layout bhi ho sakta hai.")
+            else:
+                doc.close()
+
             st.session_state.photos = extracted
             st.session_state.original_pdf = {
                 "name": pdf.name,
@@ -680,7 +815,7 @@ elif page == "Car Listing":
                 if listing["extra"]:
                     st.write(listing["extra"])
 
-                card_text = "\\n".join([
+                card_text = "\n".join([
                     listing["car_name"] or "Car listing",
                     f'Registration: {listing["registration"]}' if listing["registration"] else "",
                     f'Year: {listing["year"]}' if listing["year"] else "",
@@ -700,59 +835,60 @@ elif page == "Car Listing":
 
 elif page == "Google Drive":
     st.header("Google Drive Integration")
-    st.write(
-        "Google account se login karke apna CarPhotoStudio folder banao."
-    )
+    st.write("Google account connect karke apna CarPhotoStudio folder banao.")
 
-    if not os.path.exists(CLIENT_FILE):
-        st.error(
-            "client_secret.json nahi mili. Ise app.py ke saath "
-            "CarPhotoStudio main folder mein rakho."
+    process_google_oauth_callback()
+    secret_path = get_client_secret_file()
+    if not secret_path:
+        st.error("Google OAuth client file nahi mili.")
+        st.markdown(
+            "Render mein **Environment → Secret Files → Add file** par jaakar "
+            "`client_secret.json` upload karo aur file path "
+            "`/etc/secrets/client_secret.json` rakho. Local VS Code ke liye "
+            "`client_secret.json` ko `app.py` ke saath rakho."
         )
     else:
-        if st.button("1. Connect Google Account", type="primary"):
-            try:
-                with st.spinner("Google login khul raha hai..."):
-                    service = get_drive_service()
-                    about = service.about().get(
-                        fields="user(displayName,emailAddress)"
-                    ).execute()
-
-                st.session_state.google_email = about["user"].get(
-                    "emailAddress", "Google account connected"
-                )
-                st.success(
-                    f'Connected: {st.session_state.google_email}'
-                )
-
-            except Exception as e:
-                st.error(f"Google login failed: {e}")
-                st.info(
-                    "OAuth client ka type Desktop app hona chahiye. "
-                    "Audience > Test users mein apna Gmail bhi add karo."
-                )
-
-        if os.path.exists(TOKEN_FILE):
-            st.caption("Saved Google login detected.")
-
-            if st.button("2. Create Drive Folder"):
-                try:
-                    service = get_drive_service()
-                    folder = create_drive_folder(service)
-                    st.session_state.drive_folder = folder
-                    st.success("CarPhotoStudio folder created!")
-                except Exception as e:
-                    st.error(f"Folder creation failed: {e}")
-
-        folder = st.session_state.drive_folder
-
-        if folder:
-            st.write(f'Folder: {folder["name"]}')
-            st.warning(
-                "Agla button folder ko kisi bhi link wale vyakti "
-                "ke liye viewable bana dega."
+        connected = bool(
+            st.session_state.get("google_credentials")
+            and st.session_state.google_credentials.valid
+        )
+        if connected:
+            st.success(
+                f'Connected: {st.session_state.get("google_email", "Google account")}'
             )
+        else:
+            st.info("Google account connect karne ke liye neeche button dabao.")
+            if st.button("1. Connect Google Account", type="primary"):
+                try:
+                    flow = make_google_oauth_flow()
+                    auth_url, state = flow.authorization_url(
+                        access_type="offline",
+                        include_granted_scopes="true",
+                        prompt="consent",
+                    )
+                    st.session_state.google_oauth_state = state
+                    st.link_button("Google par login karo", auth_url)
+                    st.caption(
+                        "Google login button par click karo. Login ke baad website par wapas aa jaoge."
+                    )
+                except Exception as exc:
+                    st.error(f"Google login start nahi ho paya: {exc}")
 
+        if connected and st.button("2. Create Drive Folder"):
+            try:
+                service = get_drive_service()
+                folder = create_drive_folder(service)
+                st.session_state.drive_folder = folder
+                st.success("CarPhotoStudio folder created!")
+            except Exception as exc:
+                st.error(f"Folder creation failed: {exc}")
+
+        folder = st.session_state.get("drive_folder")
+        if folder:
+            st.write(f'Folder: {folder.get("name", "CarPhotoStudio")}')
+            st.warning(
+                "Link sharing enable karne par link wala koi bhi vyakti folder dekh sakega."
+            )
             if st.button("3. Enable Link Sharing"):
                 try:
                     service = get_drive_service()
@@ -760,8 +896,8 @@ elif page == "Google Drive":
                     st.success("Link sharing enabled.")
                     st.code(link)
                     st.link_button("Open Google Drive Folder", link)
-                except Exception as e:
-                    st.error(f"Sharing failed: {e}")
+                except Exception as exc:
+                    st.error(f"Sharing failed: {exc}")
 
 elif page == "Website Analyzer":
     import re
@@ -1004,6 +1140,8 @@ elif page == "Automatic AI Cleanup":
         st.success(f"{len(source_items)} source photo(s) available.")
         max_allowed = min(len(source_items), remaining, AI_MONTHLY_IMAGE_CAP)
         labels = [item["label"] for item in source_items]
+        _old_selection = st.session_state.get("auto_ai_cleanup_selected_v1", [])
+        st.session_state["auto_ai_cleanup_selected_v1"] = [v for v in _old_selection if v in labels][:max_allowed]
         if max_allowed > 0 and st.button(f"Select first {max_allowed} photo(s) within monthly cap", key="auto_ai_cleanup_select_all_v1"):
             st.session_state["auto_ai_cleanup_selected_v1"] = labels[:max_allowed]
         chosen_labels = st.multiselect(
@@ -1018,7 +1156,7 @@ elif page == "Automatic AI Cleanup":
                 preview_cols = st.columns(min(3, len(selected_items)))
                 for idx, item in enumerate(selected_items[:9]):
                     with preview_cols[idx % len(preview_cols)]:
-                        st.image(item["bytes"], caption=item["label"], use_container_width=True)
+                        st.image(item["bytes"], caption=item["label"], width="stretch")
 
     own_logo_permission = st.checkbox(
         "Main confirm karta/karti hoon ki reference mein diya gaya logo mera hai ya mujhe use edit karne ki permission hai.",
@@ -1138,7 +1276,7 @@ elif page == "Automatic AI Cleanup":
         )
         for i, output in enumerate(reversed(cleanup_outputs)):
             with st.expander(f'{output["name"]} • source: {output["source"]}', expanded=(i == 0)):
-                st.image(output["bytes"], use_container_width=True)
+                st.image(output["bytes"], width="stretch")
                 st.download_button(
                     "Download edited JPG", data=output["bytes"], file_name=output["name"],
                     mime="image/jpeg", key=f"auto_ai_cleanup_download_{len(cleanup_outputs)-i-1}",
@@ -1207,10 +1345,13 @@ elif page == "Logo Removal":
         ):
             st.session_state["separate_logo_removal_selected_v2"] = labels[:max_allowed]
 
+        _old_logo_selection = st.session_state.get("separate_logo_removal_selected_v2", [])
+        st.session_state["separate_logo_removal_selected_v2"] = [v for v in _old_logo_selection if v in labels][:max_allowed]
         selected_labels = st.multiselect(
             f"Batch ke liye photos chuno (monthly limit ke hisaab se maximum {max_allowed})",
             labels,
             max_selections=max(1, max_allowed),
+            disabled=(max_allowed == 0),
             key="separate_logo_removal_selected_v2",
         )
         selected_items = [item for item in source_items if item["label"] in selected_labels]
@@ -1228,6 +1369,10 @@ elif page == "Logo Removal":
                 key="ai_logo_removal_reference_v2",
             )
             reference_item = next(item for item in source_items if item["label"] == reference_label)
+            _last_ai_reference = st.session_state.get("ai_logo_removal_last_reference_v2")
+            if _last_ai_reference != reference_label:
+                st.session_state.pop("ai_logo_removal_rect_pct_v2", None)
+                st.session_state["ai_logo_removal_last_reference_v2"] = reference_label
             try:
                 from PIL import ImageDraw
                 from streamlit_drawable_canvas import st_canvas
@@ -1248,7 +1393,7 @@ elif page == "Logo Removal":
                     height=canvas_h,
                     width=canvas_w,
                     drawing_mode="rect",
-                    key="ai_logo_removal_canvas_v2",
+                    key=f"ai_logo_removal_canvas_v2_{labels.index(reference_label)}",
                 )
                 selected_rect = None
                 if canvas_result.json_data and canvas_result.json_data.get("objects"):
@@ -1397,7 +1542,7 @@ elif page == "Logo Removal":
         )
         for i, output in enumerate(reversed(removed_outputs)):
             with st.expander(f'{output["name"]} • Source: {output["source"]}', expanded=(i == 0)):
-                st.image(output["bytes"], use_container_width=True)
+                st.image(output["bytes"], width="stretch")
                 st.download_button(
                     "Download this AI-edited JPG",
                     data=output["bytes"],
@@ -1409,8 +1554,8 @@ elif page == "Logo Removal":
 elif page == "Non-AI Logo Removal":
     st.header("🧽 Non-AI Logo Removal — Batch Photos")
     st.write(
-        "Yeh free local processing tool hai: ek hi jagah par logo ke area ko select karke "
-        "saari selected photos par ek saath apply karo. OpenAI API use nahi hoti."
+        "Yeh local processing tool sirf aapke apne ya authorized logo/overlay ke liye hai. "
+        "OpenCV inpainting selected area ka background approximate karta hai; perfect restoration guaranteed nahi."
     )
     st.warning(
         "Sirf apne ya authorized showroom logo/overlay ke liye use karein. Source website/auction watermark, "
@@ -1453,81 +1598,36 @@ elif page == "Non-AI Logo Removal":
             key="non_ai_logo_preview_choice",
         )
         preview_item = next(item for item in non_ai_items if item["label"] == preview_label)
+        _last_preview_label = st.session_state.get("non_ai_last_preview_label")
+        if _last_preview_label != preview_label:
+            st.session_state.pop("non_ai_manual_rect_pct", None)
+            st.session_state["non_ai_last_preview_label"] = preview_label
 
-        st.subheader("Logo area manually select karo")
-        st.write("Preview image par mouse se logo ke upar rectangle drag karo. Batch mein isi relative area ko sab selected photos par process kiya jayega.")
+        st.subheader("Logo area select karo")
+        st.write("Yahan sliders se authorized logo/overlay ka area select karo. Red outline preview mein dikhai dega; white rectangle nahi lagaya jayega.")
         try:
             from PIL import ImageDraw
             with Image.open(io.BytesIO(preview_item["bytes"])) as im0:
                 preview_image = im0.convert("RGB")
 
-            # Prefer drag-to-select canvas. If the optional component is not installed,
-            # retain percentage sliders as a dependable fallback.
-            try:
-                from streamlit_drawable_canvas import st_canvas
-                max_w, max_h = 900, 620
-                scale = min(max_w / preview_image.width, max_h / preview_image.height, 1.0)
-                canvas_w = max(1, int(preview_image.width * scale))
-                canvas_h = max(1, int(preview_image.height * scale))
-                canvas_bg = preview_image.resize((canvas_w, canvas_h), Image.Resampling.LANCZOS)
-                st.caption("Mouse ka left button daba kar logo ke charo taraf rectangle draw karo. Agar galat ho, dobara draw karke adjust karo.")
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 0, 0, 0.18)",
-                    stroke_width=3,
-                    stroke_color="#ff3030",
-                    background_image=canvas_bg,
-                    update_streamlit=True,
-                    height=canvas_h,
-                    width=canvas_w,
-                    drawing_mode="rect",
-                    key="non_ai_manual_logo_canvas",
-                )
-                selected_rect = None
-                if canvas_result.json_data and canvas_result.json_data.get("objects"):
-                    rects = [obj for obj in canvas_result.json_data["objects"] if obj.get("type") == "rect"]
-                    if rects:
-                        selected_rect = rects[-1]
-                if selected_rect:
-                    left_px = max(0.0, float(selected_rect.get("left", 0)))
-                    top_px = max(0.0, float(selected_rect.get("top", 0)))
-                    width_px = max(1.0, float(selected_rect.get("width", 1)) * float(selected_rect.get("scaleX", 1)))
-                    height_px = max(1.0, float(selected_rect.get("height", 1)) * float(selected_rect.get("scaleY", 1)))
-                    left_px = min(left_px, canvas_w - 1)
-                    top_px = min(top_px, canvas_h - 1)
-                    width_px = min(width_px, canvas_w - left_px)
-                    height_px = min(height_px, canvas_h - top_px)
-                    logo_left = left_px / canvas_w * 100.0
-                    logo_top = top_px / canvas_h * 100.0
-                    logo_width = width_px / canvas_w * 100.0
-                    logo_height = height_px / canvas_h * 100.0
-                    st.success(f"Area selected: left {logo_left:.1f}%, top {logo_top:.1f}%, width {logo_width:.1f}%, height {logo_height:.1f}%")
-                    st.session_state["non_ai_manual_rect_pct"] = (logo_left, logo_top, logo_width, logo_height)
-                elif "non_ai_manual_rect_pct" in st.session_state:
-                    logo_left, logo_top, logo_width, logo_height = st.session_state["non_ai_manual_rect_pct"]
-                    st.info("Pichhla selected rectangle use ho raha hai. Naya rectangle draw karke replace kar sakte ho.")
-                else:
-                    logo_left, logo_top, logo_width, logo_height = 75.0, 80.0, 20.0, 12.0
-                    st.info("Pehle image par rectangle draw karo. Rectangle select hone ke baad hi processing chalao.")
-                manual_rect_selected = selected_rect is not None or "non_ai_manual_rect_pct" in st.session_state
-            except ImportError:
-                st.info("Drag-to-select ke liye ek chhoti library install karo: python -m pip install streamlit-drawable-canvas. Filhaal percentage sliders use kar sakte ho.")
-                left_col, right_col = st.columns([1, 1])
-                with left_col:
-                    logo_left = st.slider("Logo ka left edge (% width)", 0, 95, 75, key="non_ai_logo_left")
-                    logo_top = st.slider("Logo ka top edge (% height)", 0, 95, 80, key="non_ai_logo_top")
-                with right_col:
-                    logo_width = st.slider("Logo area ki width (%)", 1, 50, 20, key="non_ai_logo_width")
-                    logo_height = st.slider("Logo area ki height (%)", 1, 50, 12, key="non_ai_logo_height")
-                preview_copy = preview_image.copy()
-                x1 = min(preview_copy.width - 1, round(preview_copy.width * logo_left / 100))
-                y1 = min(preview_copy.height - 1, round(preview_copy.height * logo_top / 100))
-                x2 = min(preview_copy.width, max(x1 + 1, round(preview_copy.width * (logo_left + logo_width) / 100)))
-                y2 = min(preview_copy.height, max(y1 + 1, round(preview_copy.height * (logo_top + logo_height) / 100)))
-                ImageDraw.Draw(preview_copy).rectangle((x1, y1, x2, y2), outline=(255, 0, 0), width=max(3, preview_copy.width // 300))
-                st.image(preview_copy, caption="Preview — red box = target area", use_container_width=True)
-                manual_rect_selected = True
+            left_col, right_col = st.columns(2)
+            with left_col:
+                logo_left = st.slider("Area ka left edge (% width)", 0, 95, 75, key="non_ai_logo_left")
+                logo_top = st.slider("Area ka top edge (% height)", 0, 95, 80, key="non_ai_logo_top")
+            with right_col:
+                logo_width = st.slider("Area ki width (%)", 1, 50, 20, key="non_ai_logo_width")
+                logo_height = st.slider("Area ki height (%)", 1, 50, 12, key="non_ai_logo_height")
+
+            preview_copy = preview_image.copy()
+            x1 = min(preview_copy.width - 1, round(preview_copy.width * logo_left / 100))
+            y1 = min(preview_copy.height - 1, round(preview_copy.height * logo_top / 100))
+            x2 = min(preview_copy.width - 1, max(x1 + 1, round(preview_copy.width * (logo_left + logo_width) / 100)))
+            y2 = min(preview_copy.height - 1, max(y1 + 1, round(preview_copy.height * (logo_top + logo_height) / 100)))
+            ImageDraw.Draw(preview_copy).rectangle((x1, y1, x2, y2), outline=(255, 35, 35), width=max(3, preview_copy.width // 300))
+            st.image(preview_copy, caption="Preview: red outline = area to inpaint", use_container_width=True)
+            manual_rect_selected = (logo_width > 0 and logo_height > 0)
         except Exception as exc:
-            logo_left, logo_top, logo_width, logo_height = 75.0, 80.0, 20.0, 12.0
+            logo_left, logo_top, logo_width, logo_height = 75, 80, 20, 12
             manual_rect_selected = False
             st.error(f"Preview/area selection load nahi hui: {exc}")
 
@@ -1546,29 +1646,15 @@ elif page == "Non-AI Logo Removal":
             cv2 = None
             np = None
 
+        non_ai_method = "OpenCV inpainting (background approximate karega)"
         if cv2_available:
-            non_ai_method = st.radio(
-                "Logo area kaise remove/cover karein?",
-                ["OpenCV inpainting (background approximate karega)", "Solid color se cover karo"],
-                key="non_ai_logo_method",
-            )
+            st.success("Natural-background mode enabled: OpenCV inpainting. White/solid rectangle mode hata diya gaya hai.")
         else:
-            non_ai_method = "Solid color se cover karo"
-            st.info(
-                "Zyada natural non-AI inpainting ke liye optional library install kar sakte ho: "
-                "python -m pip install opencv-python-headless. Abhi cover method available hai."
+            st.error(
+                "Natural background restoration ke liye OpenCV install hona zaroori hai. "
+                "Solid white rectangle ab fallback ke roop mein nahi lagaya jayega. "
+                "Requirements mein opencv-python-headless add karke redeploy karo."
             )
-            st.radio(
-                "Logo area kaise remove/cover karein?",
-                ["Solid color se cover karo"],
-                key="non_ai_logo_method_fallback",
-            )
-
-        fill_color = st.color_picker(
-            "Cover color (sirf solid-cover option ke liye)",
-            "#FFFFFF",
-            key="non_ai_logo_fill_color",
-        )
         inpaint_radius = st.slider(
             "Inpainting radius (higher = more surrounding fill; try 3–9)",
             3, 15, 5,
@@ -1584,13 +1670,12 @@ elif page == "Non-AI Logo Removal":
         if st.button(
             "Sab selected photos par non-AI logo removal karo",
             type="primary",
-            disabled=(not consent_non_ai or not manual_rect_selected),
+            disabled=(not consent_non_ai or not manual_rect_selected or not cv2_available or not non_ai_items),
             key="non_ai_logo_run",
         ):
             non_ai_outputs = []
             non_ai_errors = []
             progress = st.progress(0, text="Batch processing shuru ho rahi hai…")
-            rgb = tuple(int(fill_color[i:i+2], 16) for i in (1, 3, 5))
             total = len(non_ai_items)
             for idx, item in enumerate(non_ai_items, start=1):
                 try:
@@ -1600,16 +1685,17 @@ elif page == "Non-AI Logo Removal":
                     ya = min(im.height - 1, round(im.height * logo_top / 100))
                     xb = min(im.width, max(xa + 1, round(im.width * (logo_left + logo_width) / 100)))
                     yb = min(im.height, max(ya + 1, round(im.height * (logo_top + logo_height) / 100)))
-                    if cv2_available and non_ai_method == "OpenCV inpainting (background approximate karega)":
-                        arr = np.array(im)
-                        mask = np.zeros((im.height, im.width), dtype=np.uint8)
-                        mask[ya:yb, xa:xb] = 255
-                        processed = cv2.inpaint(arr, mask, float(inpaint_radius), cv2.INPAINT_TELEA)
-                        result_im = Image.fromarray(processed)
-                    else:
-                        result_im = im.copy()
-                        draw = ImageDraw.Draw(result_im)
-                        draw.rectangle((xa, ya, xb, yb), fill=rgb)
+                    if not cv2_available:
+                        raise RuntimeError("OpenCV missing hai; white rectangle se replace karna band hai. opencv-python-headless install karo.")
+                    arr = np.array(im)
+                    mask = np.zeros((im.height, im.width), dtype=np.uint8)
+                    # Small dilation gives inpainting a little edge context without expanding the selected area too much.
+                    cv2.rectangle(mask, (xa, ya), (max(xa, xb - 1), max(ya, yb - 1)), 255, thickness=-1)
+                    kernel_size = 3
+                    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+                    mask = cv2.dilate(mask, kernel, iterations=1)
+                    processed = cv2.inpaint(arr, mask, float(inpaint_radius), cv2.INPAINT_TELEA)
+                    result_im = Image.fromarray(processed)
                     buffer = io.BytesIO()
                     result_im.save(buffer, format="JPEG", quality=94, optimize=True)
                     stem = Path(item["label"]).stem.replace(" ", "_")[:60]
@@ -1647,7 +1733,7 @@ elif page == "Non-AI Logo Removal":
         )
         for j, output in enumerate(reversed(non_ai_outputs)):
             with st.expander(f'{output["name"]} • Source: {output["source"]}', expanded=(j == 0)):
-                st.image(output["bytes"], use_container_width=True)
+                st.image(output["bytes"], width="stretch")
                 st.download_button(
                     "Download JPG",
                     data=output["bytes"],
@@ -1888,10 +1974,13 @@ elif page == "AI Image Studio":
             "Agar 10 se zyada photos hain, current monthly app cap ke andar wali photos hi process hongi."
         )
         max_batch = min(10, remaining)
+        _old_batch_selection = st.session_state.get("batch_ai_selected_labels", [])
+        st.session_state["batch_ai_selected_labels"] = [v for v in _old_batch_selection if v in labels][:max_batch]
         selected_labels = st.multiselect(
             f"Ek batch mein photos chuno (abhi maximum {max_batch})",
             labels,
             max_selections=max(1, max_batch),
+            disabled=(max_batch == 0),
             key="batch_ai_selected_labels",
         )
         selected_items = [item for item in source_items if item["label"] in selected_labels]
@@ -1937,7 +2026,7 @@ elif page == "AI Image Studio":
             preview_cols = st.columns(min(3, len(selected_items)))
             for i, item in enumerate(selected_items):
                 with preview_cols[i % len(preview_cols)]:
-                    st.image(item["bytes"], caption=item["label"], use_container_width=True)
+                    st.image(item["bytes"], caption=item["label"], width="stretch")
 
         can_process = bool(
             selected_items and ai_key and remaining > 0 and allowed_to_edit and understand_synthetic
@@ -2068,7 +2157,7 @@ elif page == "AI Image Studio":
         )
         for i, output in enumerate(reversed(outputs)):
             with st.expander(f'{output["name"]} • Source: {output["source"]}', expanded=(i == 0)):
-                st.image(output["bytes"], use_container_width=True)
+                st.image(output["bytes"], width="stretch")
                 st.download_button(
                     "Download AI-edited JPG", data=output["bytes"],
                     file_name=output["name"], mime="image/jpeg",
