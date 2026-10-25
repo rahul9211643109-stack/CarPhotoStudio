@@ -296,24 +296,49 @@ def prepare_image_for_edit(raw_bytes):
         return buffer.getvalue()
 
 
+
 def add_ai_disclaimer(raw_bytes):
-    """Mark every output so it cannot be mistaken for an untouched evidence photo."""
-    from PIL import ImageDraw, ImageFont
+    """Add a compact AI-edited label inside the photo without adding extra space."""
+    from PIL import Image, ImageDraw, ImageFont
+
     with Image.open(io.BytesIO(raw_bytes)) as opened:
         image = opened.convert("RGB")
+
     draw = ImageDraw.Draw(image)
-    band_height = max(36, image.height // 14)
-    y0 = image.height - band_height
-    draw.rectangle((0, y0, image.width, image.height), fill=(20, 20, 20))
-    label = "AI-EDITED / ILLUSTRATIVE - NOT ORIGINAL PHOTO"
+
+    # Photo ke andar hi chhoti label strip banegi.
+    band_height = max(24, min(42, image.height // 24))
+    draw.rectangle(
+        (0, 0, image.width, band_height),
+        fill=(20, 20, 20),
+    )
+
+    label = "AI-EDITED COPY - NOT ORIGINAL PHOTO"
+
     try:
-        font = ImageFont.truetype("arial.ttf", max(14, image.width // 55))
+        font_size = max(10, min(18, image.width // 70))
+        font = ImageFont.truetype("arial.ttf", font_size)
     except OSError:
         font = ImageFont.load_default()
-    draw.text((max(8, image.width // 60), y0 + band_height // 4), label, fill=(255, 255, 255), font=font)
-    out = io.BytesIO()
-    image.save(out, format="JPEG", quality=92, optimize=True)
-    return out.getvalue()
+
+    text_y = max(2, (band_height - 14) // 2)
+
+    draw.text(
+        (8, text_y),
+        label,
+        fill=(255, 255, 255),
+        font=font,
+    )
+
+    output = io.BytesIO()
+    image.save(
+        output,
+        format="JPEG",
+        quality=92,
+        optimize=True,
+    )
+
+    return output.getvalue()
 
 
 
@@ -546,7 +571,7 @@ def enable_folder_link(service, folder_id):
 
 page = st.sidebar.radio(
     "Menu",
-    ["Dashboard", "Upload PDF", "My Photos", "Website Analyzer", "Logo Removal", "Add New Logo", "Car Listing", "Google Drive", "Settings"],
+    ["Dashboard", "Upload PDF", "My Photos", "Website Analyzer", "Logo Removal", "Non-AI Logo Removal", "Add New Logo", "Car Listing", "Google Drive", "Settings"],
 )
 
 if page == "Dashboard":
@@ -1426,8 +1451,8 @@ elif page == "Logo Removal":
                     )
                 else:
                     st.info("Pehle photo par rectangle draw karo. Phir batch process karna.")
-            except ImportError:
-                st.warning("Manual draw tool install nahi hai. Terminal mein: python -m pip install streamlit-drawable-canvas")
+            except Exception as canvas_error:
+                st.warning(f"Manual drawing tool abhi kaam nahi kar raha ({type(canvas_error).__name__}). Neeche diye sliders se logo ka area select kar sakte ho.")
                 rect_cols = st.columns(2)
                 with rect_cols[0]:
                     roi_left = st.slider("Logo left (%)", 0, 95, 75, key="ai_logo_roi_left_v2")
@@ -1451,79 +1476,69 @@ elif page == "Logo Removal":
                 "Mujhe pata hai ki AI-edited copy banegi, jo car/damage details ko badal sakti hai.",
                 key="separate_logo_removal_synthetic_v2",
             )
-            api_key = get_openai_api_key()
-            if not api_key:
-                st.error("OpenAI API key read nahi ho rahi. .streamlit/secrets.toml check karo; key chat mein mat bhejna.")
-            can_run = bool(selected_items and rect_pct and api_key and remaining > 0 and consent_own_logo and consent_synthetic)
+            can_run = bool(
+                selected_items and rect_pct and consent_own_logo and consent_synthetic
+            )
             if st.button(
-                "Selected photos par marked logo AI se remove karo",
+                "Selected photos par marked logo LaMa se remove karo",
                 type="primary",
                 disabled=not can_run,
                 key="separate_logo_removal_run_v2",
             ):
+                results = st.session_state.setdefault("separate_logo_removed_images_v2", [])
+                errors = []
+                progress = st.progress(0, text="LaMa batch shuru ho raha hai...")
+                left_pct, top_pct, width_pct, height_pct = rect_pct
+
                 try:
-                    from openai import OpenAI
-                    client = OpenAI(api_key=api_key)
-                    results = st.session_state.setdefault("separate_logo_removed_images_v2", [])
-                    errors = []
-                    progress = st.progress(0, text="AI batch shuru ho raha haiâ€¦")
-                    left_pct, top_pct, width_pct, height_pct = rect_pct
+                    from PIL import ImageDraw
+
                     for i, item in enumerate(selected_items, start=1):
-                        current_usage = get_ai_usage()
-                        if current_usage["count"] >= AI_MONTHLY_IMAGE_CAP:
-                            errors.append("Monthly app cap reached; baaki photos skip hui.")
-                            break
                         try:
-                            normalized = prepare_image_for_edit(item["bytes"])
-                            with Image.open(io.BytesIO(normalized)) as im_norm:
-                                iw, ih = im_norm.size
-                            # GPT Image masks use transparent pixels to indicate the area to edit.
-                            mask = Image.new("RGBA", (iw, ih), (255, 255, 255, 255))
-                            md = ImageDraw.Draw(mask)
+                            with Image.open(io.BytesIO(item["bytes"])) as source_image:
+                                image = source_image.convert("RGB")
+
+                            iw, ih = image.size
                             x1 = max(0, min(iw - 1, round(iw * left_pct / 100)))
                             y1 = max(0, min(ih - 1, round(ih * top_pct / 100)))
-                            x2 = max(x1 + 1, min(iw, round(iw * (left_pct + width_pct) / 100)))
-                            y2 = max(y1 + 1, min(ih, round(ih * (top_pct + height_pct) / 100)))
-                            md.rectangle((x1, y1, x2, y2), fill=(255, 255, 255, 0))
-                            mask_buffer = io.BytesIO()
-                            mask.save(mask_buffer, format="PNG")
-                            record_ai_attempt()
-                            with st.spinner(f'{item["label"]}: AI editingâ€¦'):
-                                response = client.images.edit(
-                                    model="gpt-image-2.5-sunburst",
-                                    image=("car_reference.jpg", normalized, "image/jpeg"),
-                                    mask=("logo_area_mask.png", mask_buffer.getvalue(), "image/png"),
-                                    prompt=(
-                                        "Edit only the manually masked rectangle in the provided photo to remove the image owner's own authorized showroom logo overlay. "
-                                        "Reconstruct only that small background area as naturally as possible. Keep every unmasked area, the vehicle, its color, angle, condition, "
-                                        "and all visible damage unchanged. Do not remove third-party website or auction branding, source watermarks, date/time/location stamps, "
-                                        "inspection/insurance labels, signatures, registration details, vehicle badges, or provenance marks. Do not add text. "
-                                        "Return one edited copy of the same image; it is illustrative, not documentary evidence."
-                                    ),
-                                    quality="low",
-                                    size="auto",
-                                    output_format="jpeg",
-                                )
-                            if not response.data or not response.data[0].b64_json:
-                                raise RuntimeError("AI output nahi mila.")
-                            generated = base64.b64decode(response.data[0].b64_json)
-                            marked = add_ai_disclaimer(generated)
+                            x2 = max( x1 + 1, min(iw, round(iw * (left_pct + width_pct) / 100)))
+                            y2 = max( y1 + 1, min(ih, round(ih * (top_pct + height_pct) / 100)))
+
+                            # LaMa mask: white = fill/inpaint, black = preserve.
+                            mask_image = Image.new("L", (iw, ih), 0)
+                            ImageDraw.Draw(mask_image).rectangle(
+                                (x1, y1, x2 - 1, y2 - 1), fill=255
+                            )
+
+                            with st.spinner(f'{item["label"]}: LaMa processing...'):
+                                processed_image = get_lama_model()(image, mask_image).convert("RGB")
+
+                            output_buffer = io.BytesIO()
+                            processed_image.save(
+                                output_buffer, format="JPEG", quality=94, optimize=True
+                            )
+                            marked_bytes = add_ai_disclaimer(output_buffer.getvalue())
                             stem = Path(item["label"]).stem.replace(" ", "_")[:48]
+
                             results.append({
-                                "name": f"AI_LOGO_REMOVED_{stem}_{len(results)+1}.jpg",
+                                "name": f"LAMA_LOGO_REMOVED_{stem}_{len(results)+1}.jpg",
                                 "source": item["label"],
-                                "bytes": marked,
-                                "created_month": current_usage["month"],
+                                "bytes": marked_bytes,
                             })
+
                         except Exception as exc:
                             errors.append(f'{item["label"]}: {str(exc)[:250]}')
-                        progress.progress(i / len(selected_items), text=f"Processed {i}/{len(selected_items)}")
+
+                        progress.progress(
+                            i / len(selected_items),
+                            text=f"LaMa processed {i}/{len(selected_items)}",
+                        )
+
                     st.session_state["separate_logo_removal_errors_v2"] = errors
                     st.rerun()
-                except ImportError:
-                    st.error("OpenAI library install nahi hai. Terminal mein: python -m pip install --upgrade openai")
+
                 except Exception as exc:
-                    st.error("AI batch start nahi ho saki. API billing, key, model access aur internet check karo.")
+                    st.error("LaMa batch start nahi ho saka. LaMa installation aur model download check karo.")
                     st.caption(f"Technical detail: {str(exc)[:400]}")
 
     removal_errors = st.session_state.get("separate_logo_removal_errors_v2", [])
@@ -1652,31 +1667,56 @@ elif page == "Non-AI Logo Removal":
             cv2 = None
             np = None
 
-        non_ai_method = "OpenCV inpainting (background approximate karega)"
-        if cv2_available:
-            st.success("Natural-background mode enabled: OpenCV inpainting. White/solid rectangle mode hata diya gaya hai.")
+        method_choice = st.radio(
+            "Logo removal method chuno",
+            ["OpenCV (Non-AI)", "LaMa AI"],
+            horizontal=True,
+            key="non_ai_logo_method_choice",
+        )
+
+        try:
+            from simple_lama_inpainting import SimpleLama
+            lama_available = True
+        except ImportError:
+            lama_available = False
+
+        if method_choice == "LaMa AI":
+            non_ai_method = "LaMa AI (inpainting)"
+            if lama_available:
+                st.success("LaMa AI ready hai. Selected area ko surrounding image se fill kiya jayega.")
+            else:
+                st.error("LaMa install nahi hai. Terminal mein: python -m pip install simple-lama-inpainting")
         else:
-            st.error(
-                "Natural background restoration ke liye OpenCV install hona zaroori hai. "
-                "Solid white rectangle ab fallback ke roop mein nahi lagaya jayega. "
-                "Requirements mein opencv-python-headless add karke redeploy karo."
-            )
+            non_ai_method = "OpenCV inpainting (background approximate karega)"
+            if cv2_available:
+                st.success("OpenCV inpainting ready hai. Existing Non-AI method available hai.")
+            else:
+                st.error("OpenCV install nahi hai. Requirements mein opencv-python-headless add karke install/redeploy karo.")
         inpaint_radius = st.slider(
             "Inpainting radius (higher = more surrounding fill; try 3â€“9)",
             3, 15, 5,
             key="non_ai_logo_inpaint_radius",
-            disabled=(not cv2_available or non_ai_method != "OpenCV inpainting (background approximate karega)"),
+            disabled=(method_choice != "OpenCV (Non-AI)" or not cv2_available),
         )
         consent_non_ai = st.checkbox(
             "Main confirm karta/karti hoon ki selected area mera apna logo ya authorized overlay hai.",
             key="non_ai_logo_consent",
         )
-        st.caption("Method AI nahi hai aur API charge nahi lagta. Rectangle ke andar ke details remove/replace honge; complex background ka result uneven ho sakta hai.")
+        if method_choice == "LaMa AI":
+            st.caption("LaMa local model hai; OpenAI API key/charge nahi chahiye. Result AI-edited copy hai aur details badal sakti hain.")
+        else:
+            st.caption("OpenCV local Non-AI method hai; API charge nahi lagta. Complex background ka result uneven ho sakta hai.")
 
         if st.button(
             "Sab selected photos par non-AI logo removal karo",
             type="primary",
-            disabled=(not consent_non_ai or not manual_rect_selected or not cv2_available or not non_ai_items),
+            disabled=(
+                not consent_non_ai
+                or not manual_rect_selected
+                or not non_ai_items
+                or (method_choice == "OpenCV (Non-AI)" and not cv2_available)
+                or (method_choice == "LaMa AI" and not lama_available)
+            ),
             key="non_ai_logo_run",
         ):
             non_ai_outputs = []
@@ -1691,22 +1731,30 @@ elif page == "Non-AI Logo Removal":
                     ya = min(im.height - 1, round(im.height * logo_top / 100))
                     xb = min(im.width, max(xa + 1, round(im.width * (logo_left + logo_width) / 100)))
                     yb = min(im.height, max(ya + 1, round(im.height * (logo_top + logo_height) / 100)))
-                    if not cv2_available:
-                        raise RuntimeError("OpenCV missing hai; white rectangle se replace karna band hai. opencv-python-headless install karo.")
-                    arr = np.array(im)
-                    mask = np.zeros((im.height, im.width), dtype=np.uint8)
-                    # Small dilation gives inpainting a little edge context without expanding the selected area too much.
-                    cv2.rectangle(mask, (xa, ya), (max(xa, xb - 1), max(ya, yb - 1)), 255, thickness=-1)
-                    kernel_size = 3
-                    kernel = np.ones((kernel_size, kernel_size), np.uint8)
-                    mask = cv2.dilate(mask, kernel, iterations=1)
-                    processed = cv2.inpaint(arr, mask, float(inpaint_radius), cv2.INPAINT_TELEA)
-                    result_im = Image.fromarray(processed)
+                    if method_choice == "LaMa AI":
+                        from PIL import ImageDraw
+                        lama_mask = Image.new("L", (im.width, im.height), 0)
+                        ImageDraw.Draw(lama_mask).rectangle(
+                            (xa, ya, max(xa, xb - 1), max(ya, yb - 1)),
+                            fill=255,
+                        )
+                        result_im = get_lama_model()(im, lama_mask).convert("RGB")
+                    else:
+                        if not cv2_available:
+                            raise RuntimeError("OpenCV missing hai. opencv-python-headless install karo.")
+                        arr = np.array(im)
+                        mask = np.zeros((im.height, im.width), dtype=np.uint8)
+                        # Small dilation gives OpenCV some edge context.
+                        cv2.rectangle(mask, (xa, ya), (max(xa, xb - 1), max(ya, yb - 1)), 255, thickness=-1)
+                        kernel = np.ones((3, 3), np.uint8)
+                        mask = cv2.dilate(mask, kernel, iterations=1)
+                        processed = cv2.inpaint(arr, mask, float(inpaint_radius), cv2.INPAINT_TELEA)
+                        result_im = Image.fromarray(processed)
                     buffer = io.BytesIO()
                     result_im.save(buffer, format="JPEG", quality=94, optimize=True)
                     stem = Path(item["label"]).stem.replace(" ", "_")[:60]
                     non_ai_outputs.append({
-                        "name": f"NON_AI_LOGO_REMOVED_{stem}_{idx}.jpg",
+                        "name": f"{'LAMA_AI' if method_choice == 'LaMa AI' else 'NON_AI'}_LOGO_REMOVED_{stem}_{idx}.jpg",
                         "bytes": buffer.getvalue(),
                         "source": item["label"],
                     })
@@ -1725,7 +1773,7 @@ elif page == "Non-AI Logo Removal":
     non_ai_outputs = st.session_state.get("non_ai_logo_outputs", [])
     if non_ai_outputs:
         st.divider()
-        st.subheader(f"Non-AI edited photos ready: {len(non_ai_outputs)} (originals unchanged)")
+        st.subheader(f"{'LaMa AI' if method_choice == 'LaMa AI' else 'Non-AI'} edited photos ready: {len(non_ai_outputs)} (originals unchanged)")
         zip_stream = io.BytesIO()
         with zipfile.ZipFile(zip_stream, "w", zipfile.ZIP_DEFLATED) as zf:
             for output in non_ai_outputs:
