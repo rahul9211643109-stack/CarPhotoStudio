@@ -10,13 +10,19 @@ import fitz
 import streamlit as st
 from PIL import Image
 
+@st.cache_resource(show_spinner=False)
+def get_lama_model():
+    """Load the LaMa model once and cache it."""
+    from simple_lama_inpainting import SimpleLama
+    return SimpleLama()
+
 APP_DIR = Path(__file__).resolve().parent
 BRAND_LOGO_PATH = APP_DIR / "CarPhotoStudio_Logo_Transparent.png"
 FAVICON_PATH = APP_DIR / "CarPhotoStudio_Favicon.png"
 
 st.set_page_config(
     page_title="CarPhotoStudio",
-    page_icon=str(FAVICON_PATH) if FAVICON_PATH.is_file() else "🚗",
+    page_icon=str(FAVICON_PATH) if FAVICON_PATH.is_file() else "ðŸš—",
     layout="wide",
 )
 
@@ -151,9 +157,9 @@ if BRAND_LOGO_PATH.is_file():
         _brand_logo_b64 = base64.b64encode(_brand_buf.getvalue()).decode("ascii")
         _brand_mark_html = f'<img src="data:image/png;base64,{_brand_logo_b64}" alt="CarPhotoStudio logo" />'
     except Exception:
-        _brand_mark_html = "🚘"
+        _brand_mark_html = "ðŸš˜"
 else:
-    _brand_mark_html = "🚘"
+    _brand_mark_html = "ðŸš˜"
 
 st.markdown(
     f"""
@@ -163,10 +169,10 @@ st.markdown(
         <div>
           <div class=\"cps-overline\">SHOWROOM WORKSPACE</div>
           <div class=\"cps-brand-title\">CarPhoto<span>Studio</span></div>
-          <div class=\"cps-brand-subtitle\">PDF tools · AI photo studio · Listings · Drive</div>
+          <div class=\"cps-brand-subtitle\">PDF tools Â· AI photo studio Â· Listings Â· Drive</div>
         </div>
       </div>
-      <div class=\"cps-live-pill\">● WORKSPACE READY</div>
+      <div class=\"cps-live-pill\">â— WORKSPACE READY</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -216,7 +222,7 @@ def guess_car_details(text):
     patterns = {
         "registration": r"\b[A-Z]{2}[- ]?\d{1,2}[- ]?[A-Z]{1,3}[- ]?\d{3,4}\b",
         "year": r"\b(?:19|20)\d{2}\b",
-        "price": r"(?:Rs\.?|INR|₹)\s*[\d,]+(?:\.\d+)?|[\d,]+\s*/-",
+        "price": r"(?:Rs\.?|INR|â‚¹)\s*[\d,]+(?:\.\d+)?|[\d,]+\s*/-",
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, text, re.IGNORECASE)
@@ -540,7 +546,7 @@ def enable_folder_link(service, folder_id):
 
 page = st.sidebar.radio(
     "Menu",
-    ["Dashboard", "Upload PDF", "My Photos", "Website Analyzer", "Automatic AI Cleanup", "Non-AI Logo Removal", "Logo Removal", "Add New Logo", "AI Image Studio", "Car Listing", "Google Drive", "Settings"],
+    ["Dashboard", "Upload PDF", "My Photos", "Website Analyzer", "Logo Removal", "Add New Logo", "Car Listing", "Google Drive", "Settings"],
 )
 
 if page == "Dashboard":
@@ -677,7 +683,7 @@ elif page == "My Photos":
                     st.image(photo["bytes"], width="stretch")
                     st.caption(
                         f'{photo["name"]} | Page {photo["page"]} | '
-                        f'{photo["width"]} × {photo["height"]}'
+                        f'{photo["width"]} Ã— {photo["height"]}'
                     )
                     st.download_button(
                         "Download JPG",
@@ -742,8 +748,8 @@ elif page == "My Photos":
             )
 
 elif page == "Car Listing":
-    st.header("🚘 Car Listing Maker")
-    st.caption("PDF se milne wali details suggestions hain—save karne se pehle verify/edit karein.")
+    st.header("ðŸš˜ Car Listing Maker")
+    st.caption("PDF se milne wali details suggestions hainâ€”save karne se pehle verify/edit karein.")
 
     photos = st.session_state.photos
     if not photos:
@@ -760,7 +766,7 @@ elif page == "Car Listing":
         suggested = st.session_state.get("suggested_details", {})
 
         with st.form("car_listing_form"):
-            st.subheader("Car details — sab fields edit kar sakte ho")
+            st.subheader("Car details â€” sab fields edit kar sakte ho")
             car_name = st.text_input("Car name / model", value=suggested.get("car_name", ""))
             registration = st.text_input("Registration number", value=suggested.get("registration", ""))
             year = st.text_input("Year", value=suggested.get("year", ""))
@@ -842,7 +848,7 @@ elif page == "Google Drive":
     if not secret_path:
         st.error("Google OAuth client file nahi mili.")
         st.markdown(
-            "Render mein **Environment → Secret Files → Add file** par jaakar "
+            "Render mein **Environment â†’ Secret Files â†’ Add file** par jaakar "
             "`client_secret.json` upload karo aur file path "
             "`/etc/secrets/client_secret.json` rakho. Local VS Code ke liye "
             "`client_secret.json` ko `app.py` ke saath rakho."
@@ -903,7 +909,7 @@ elif page == "Website Analyzer":
     import re
     from urllib.parse import urljoin, urlparse
 
-    st.header("🌐 Website Analyzer")
+    st.header("ðŸŒ Website Analyzer")
     st.write("Public car listing link paste karo. Website ka text aur accessible photos collect karne ki koshish hogi.")
     st.warning("Sirf wahi content import karo jiske use/download ki permission tumhare paas ho. Login/CAPTCHA/protection ko bypass nahi kiya jayega. Original source photos untouched rahengi.")
     website_url = st.text_input("Website URL", placeholder="https://example.com/car-listing")
@@ -974,7 +980,7 @@ elif page == "Website Analyzer":
                     "Year clue": find(r"\b(?:19|20)\d{2}\b"),
                     "Fuel clue": find(r"\b(?:petrol|gasoline|diesel|CNG|electric|hybrid)\b"),
                     "Transmission clue": find(r"\b(?:automatic|manual|CVT|DCT)\b"),
-                    "Price clue": find(r"(?:₹|INR|Rs\.?\s*)[\s\d,]+|\b\d[\d,]{3,}\s*/-"),
+                    "Price clue": find(r"(?:â‚¹|INR|Rs\.?\s*)[\s\d,]+|\b\d[\d,]{3,}\s*/-"),
                     "Registration clue": find(r"\b[A-Z]{2}[- ]?\d{1,2}[- ]?[A-Z]{1,3}[- ]?\d{3,4}\b"),
                 }
                 st.session_state.website_analyzer_data = {
@@ -1008,7 +1014,7 @@ elif page == "Website Analyzer":
 
     data = st.session_state.get("website_analyzer_data")
     if data:
-        st.subheader("Website se mili details — verify karke hi save karo")
+        st.subheader("Website se mili details â€” verify karke hi save karo")
         st.caption(data.get("url", ""))
         suggestions = data.get("suggestions", {})
         with st.form("website_car_details"):
@@ -1029,7 +1035,7 @@ elif page == "Website Analyzer":
         st.subheader(f"Available photos ({len(data.get('images', []))})")
         for i, item in enumerate(data.get("images", [])):
             try:
-                st.image(item["bytes"], caption=f"Imported copy {i+1} — source website", width=320)
+                st.image(item["bytes"], caption=f"Imported copy {i+1} â€” source website", width=320)
                 st.download_button(
                     f"Download photo {i+1}", data=item["bytes"],
                     file_name=f"website_photo_{i+1}.jpg", mime="application/octet-stream",
@@ -1041,7 +1047,7 @@ elif page == "Website Analyzer":
 
 
 elif page == "Automatic AI Cleanup":
-    st.header("✨ Automatic AI Logo Cleanup — Batch")
+    st.header("âœ¨ Automatic AI Logo Cleanup â€” Batch")
     st.write(
         "PDF upload karo, uske embedded car photos extract karo, apne/authorized logo ki clean reference image do, "
         "aur available photos ko ek batch mein process karo. Rectangle manually draw karne ki zaroorat nahi."
@@ -1064,12 +1070,12 @@ elif page == "Automatic AI Cleanup":
 
     input_mode = st.radio(
         "Photos kahan se leni hain?",
-        ["Upload PDF(s) — auto-extract", "My Photos (already extracted)", "Upload multiple JPG/PNG", "Website Analyzer imports"],
+        ["Upload PDF(s) â€” auto-extract", "My Photos (already extracted)", "Upload multiple JPG/PNG", "Website Analyzer imports"],
         key="auto_ai_cleanup_input_mode_v1",
     )
     source_items = []
     selected_items = []
-    if input_mode == "Upload PDF(s) — auto-extract":
+    if input_mode == "Upload PDF(s) â€” auto-extract":
         pdf_uploads = st.file_uploader(
             "PDF file(s) upload karo", type=["pdf"], accept_multiple_files=True,
             key="auto_ai_cleanup_pdfs_v1",
@@ -1100,7 +1106,7 @@ elif page == "Automatic AI Cleanup":
             for i, p in enumerate(st.session_state.get("photos", [])) if p.get("bytes")
         ]
         if not source_items:
-            st.info("Pehle Upload PDF → Extract Photos chalao, ya Automatic AI Cleanup mein PDF upload mode use karo.")
+            st.info("Pehle Upload PDF â†’ Extract Photos chalao, ya Automatic AI Cleanup mein PDF upload mode use karo.")
     elif input_mode == "Upload multiple JPG/PNG":
         image_uploads = st.file_uploader(
             "JPG / PNG / WebP photos select karo", type=["jpg", "jpeg", "png", "webp"],
@@ -1190,7 +1196,7 @@ elif page == "Automatic AI Cleanup":
                 client = OpenAI(api_key=api_key)
                 outputs = st.session_state.setdefault("auto_ai_cleanup_outputs_v1", [])
                 errors = []
-                progress = st.progress(0, text="AI batch shuru ho raha hai…")
+                progress = st.progress(0, text="AI batch shuru ho raha haiâ€¦")
                 logo_ref_bytes = logo_reference_upload.getvalue()
                 # Normalize reference logo while preserving its transparent pixels if present.
                 with Image.open(io.BytesIO(logo_ref_bytes)) as logo_ref_img:
@@ -1209,7 +1215,7 @@ elif page == "Automatic AI Cleanup":
                     try:
                         normalized = prepare_image_for_edit(item["bytes"])
                         record_ai_attempt()
-                        with st.spinner(f'{item["label"]}: AI cleanup…'):
+                        with st.spinner(f'{item["label"]}: AI cleanupâ€¦'):
                             response = client.images.edit(
                                 model="gpt-image-2.5-sunburst",
                                 image=[
@@ -1264,7 +1270,7 @@ elif page == "Automatic AI Cleanup":
     cleanup_outputs = st.session_state.get("auto_ai_cleanup_outputs_v1", [])
     if cleanup_outputs:
         st.divider()
-        st.subheader("AI-edited batch outputs — originals unchanged")
+        st.subheader("AI-edited batch outputs â€” originals unchanged")
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             for output in cleanup_outputs:
@@ -1275,7 +1281,7 @@ elif page == "Automatic AI Cleanup":
             key="auto_ai_cleanup_zip_v1",
         )
         for i, output in enumerate(reversed(cleanup_outputs)):
-            with st.expander(f'{output["name"]} • source: {output["source"]}', expanded=(i == 0)):
+            with st.expander(f'{output["name"]} â€¢ source: {output["source"]}', expanded=(i == 0)):
                 st.image(output["bytes"], width="stretch")
                 st.download_button(
                     "Download edited JPG", data=output["bytes"], file_name=output["name"],
@@ -1284,7 +1290,7 @@ elif page == "Automatic AI Cleanup":
 
 
 elif page == "Logo Removal":
-    st.header("🧽 AI Logo Removal — Manual Area + Batch")
+    st.header("ðŸ§½ AI Logo Removal â€” Manual Area + Batch")
     st.write(
         "Apne ya authorized showroom logo ko pehle ek photo par rectangle se mark karo. "
         "Wahi relative area selected photos par AI mask ke saath process hoga. Original files unchanged rahengi."
@@ -1300,7 +1306,7 @@ elif page == "Logo Removal":
     st.metric("Is mahine ke AI edit attempts bache", remaining)
     st.caption(
         "Har photo ke liye alag paid API request hoti hai. App cap 10 requests/month hai; "
-        "yeh ₹500 ka guaranteed billing hard-stop nahi hai."
+        "yeh â‚¹500 ka guaranteed billing hard-stop nahi hai."
     )
 
     source_choice = st.radio(
@@ -1316,7 +1322,7 @@ elif page == "Logo Removal":
             if photo.get("bytes")
         ]
         if not source_items:
-            st.info("Pehle Upload PDF → Extract Photos karo.")
+            st.info("Pehle Upload PDF â†’ Extract Photos karo.")
     elif source_choice == "Upload multiple photos":
         uploads = st.file_uploader(
             "Apni/authorized JPG, PNG ya WebP photos select karo",
@@ -1362,7 +1368,7 @@ elif page == "Logo Removal":
             )
 
         if selected_items:
-            st.subheader("Step 1 — Apne logo ka area manually mark karo")
+            st.subheader("Step 1 â€” Apne logo ka area manually mark karo")
             reference_label = st.selectbox(
                 "Ek representative photo chuno; us par logo ke ird-gird rectangle draw karo",
                 labels,
@@ -1434,7 +1440,7 @@ elif page == "Logo Removal":
 
             rect_pct = st.session_state.get("ai_logo_removal_rect_pct_v2")
             if rect_pct:
-                st.subheader("Step 2 — Batch process")
+                st.subheader("Step 2 â€” Batch process")
                 st.caption("Same relative area sab selected photos par edit hoga. Agar logo alag jagah hai, un photos ko alag batch mein chalana.")
 
             consent_own_logo = st.checkbox(
@@ -1460,7 +1466,7 @@ elif page == "Logo Removal":
                     client = OpenAI(api_key=api_key)
                     results = st.session_state.setdefault("separate_logo_removed_images_v2", [])
                     errors = []
-                    progress = st.progress(0, text="AI batch shuru ho raha hai…")
+                    progress = st.progress(0, text="AI batch shuru ho raha haiâ€¦")
                     left_pct, top_pct, width_pct, height_pct = rect_pct
                     for i, item in enumerate(selected_items, start=1):
                         current_usage = get_ai_usage()
@@ -1482,7 +1488,7 @@ elif page == "Logo Removal":
                             mask_buffer = io.BytesIO()
                             mask.save(mask_buffer, format="PNG")
                             record_ai_attempt()
-                            with st.spinner(f'{item["label"]}: AI editing…'):
+                            with st.spinner(f'{item["label"]}: AI editingâ€¦'):
                                 response = client.images.edit(
                                     model="gpt-image-2.5-sunburst",
                                     image=("car_reference.jpg", normalized, "image/jpeg"),
@@ -1528,7 +1534,7 @@ elif page == "Logo Removal":
     removed_outputs = st.session_state.get("separate_logo_removed_images_v2", [])
     if removed_outputs:
         st.divider()
-        st.subheader("AI logo removal outputs — originals unchanged")
+        st.subheader("AI logo removal outputs â€” originals unchanged")
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             for output in removed_outputs:
@@ -1541,7 +1547,7 @@ elif page == "Logo Removal":
             key="separate_logo_removal_zip_v2",
         )
         for i, output in enumerate(reversed(removed_outputs)):
-            with st.expander(f'{output["name"]} • Source: {output["source"]}', expanded=(i == 0)):
+            with st.expander(f'{output["name"]} â€¢ Source: {output["source"]}', expanded=(i == 0)):
                 st.image(output["bytes"], width="stretch")
                 st.download_button(
                     "Download this AI-edited JPG",
@@ -1552,7 +1558,7 @@ elif page == "Logo Removal":
                 )
 
 elif page == "Non-AI Logo Removal":
-    st.header("🧽 Non-AI Logo Removal — Batch Photos")
+    st.header("ðŸ§½ Non-AI Logo Removal â€” Batch Photos")
     st.write(
         "Yeh local processing tool sirf aapke apne ya authorized logo/overlay ke liye hai. "
         "OpenCV inpainting selected area ka background approximate karta hai; perfect restoration guaranteed nahi."
@@ -1576,7 +1582,7 @@ elif page == "Non-AI Logo Removal":
             if photo.get("bytes")
         ]
         if not non_ai_items:
-            st.info("Pehle Upload PDF → PDF select → Extract Photos dabao. Phir yahan sab extracted JPG ek saath milenge.")
+            st.info("Pehle Upload PDF â†’ PDF select â†’ Extract Photos dabao. Phir yahan sab extracted JPG ek saath milenge.")
     else:
         non_ai_uploads = st.file_uploader(
             "Apni/authorized JPG, PNG ya WebP photos chuno (multiple allowed)",
@@ -1656,7 +1662,7 @@ elif page == "Non-AI Logo Removal":
                 "Requirements mein opencv-python-headless add karke redeploy karo."
             )
         inpaint_radius = st.slider(
-            "Inpainting radius (higher = more surrounding fill; try 3–9)",
+            "Inpainting radius (higher = more surrounding fill; try 3â€“9)",
             3, 15, 5,
             key="non_ai_logo_inpaint_radius",
             disabled=(not cv2_available or non_ai_method != "OpenCV inpainting (background approximate karega)"),
@@ -1675,7 +1681,7 @@ elif page == "Non-AI Logo Removal":
         ):
             non_ai_outputs = []
             non_ai_errors = []
-            progress = st.progress(0, text="Batch processing shuru ho rahi hai…")
+            progress = st.progress(0, text="Batch processing shuru ho rahi haiâ€¦")
             total = len(non_ai_items)
             for idx, item in enumerate(non_ai_items, start=1):
                 try:
@@ -1732,7 +1738,7 @@ elif page == "Non-AI Logo Removal":
             key="non_ai_logo_zip_download",
         )
         for j, output in enumerate(reversed(non_ai_outputs)):
-            with st.expander(f'{output["name"]} • Source: {output["source"]}', expanded=(j == 0)):
+            with st.expander(f'{output["name"]} â€¢ Source: {output["source"]}', expanded=(j == 0)):
                 st.image(output["bytes"], width="stretch")
                 st.download_button(
                     "Download JPG",
@@ -1743,7 +1749,7 @@ elif page == "Non-AI Logo Removal":
                 )
 
 elif page == "Add New Logo":
-    st.header("🏷️ Add New Logo — Separate Batch Tool")
+    st.header("ðŸ·ï¸ Add New Logo â€” Separate Batch Tool")
     st.write("Yeh page sirf naya showroom logo add karta hai. Purana logo yahan remove/cover nahi hota; uske liye Logo Removal page use karo.")
     st.info("Yeh local processing hai aur OpenAI API request nahi karta. Original photos/PDF unchanged rahenge; edited copies alag download hongi.")
 
@@ -1818,7 +1824,7 @@ elif page == "Add New Logo":
             with Image.open(io.BytesIO(logo_bytes)) as temp_logo:
                 logo_image = temp_logo.convert("RGBA")
             outputs, problems = [], []
-            progress = st.progress(0, text="Logo sabhi files par add ho raha hai…")
+            progress = st.progress(0, text="Logo sabhi files par add ho raha haiâ€¦")
 
             def _box(canvas_w, canvas_h, box_w, box_h, corner, margin_pct, custom_x_pct, custom_y_pct):
                 mx, my = canvas_w * margin_pct / 100.0, canvas_h * margin_pct / 100.0
@@ -1909,13 +1915,13 @@ elif page == "Add New Logo":
                 )
 
 elif page == "AI Image Studio":
-    st.header("✨ Batch AI Photo Studio")
+    st.header("âœ¨ Batch AI Photo Studio")
     st.write(
         "PDF se nikli kai car photos ko ek hi batch mein AI se photorealistic edited copies mein badlo. "
         "Optional: apna naya showroom logo sab output photos par automatically lagao."
     )
     st.warning(
-        "AI output ek nayi, synthetic/edited image hai—original photo nahi. AI car ki details, damage, "
+        "AI output ek nayi, synthetic/edited image haiâ€”original photo nahi. AI car ki details, damage, "
         "number plate ya background badal sakta hai. Output par AI-EDITED label lagaya jayega; ise asli "
         "inspection, insurance, legal ya auction evidence ke roop mein use na karein."
     )
@@ -1959,7 +1965,7 @@ elif page == "AI Image Studio":
 
     if not source_items:
         st.info(
-            "Pehle Upload PDF → Extract Photos chalao, Website Analyzer mein permitted photos import karo, "
+            "Pehle Upload PDF â†’ Extract Photos chalao, Website Analyzer mein permitted photos import karo, "
             "ya Upload my own images select karke photos choose karo."
         )
     else:
@@ -1970,7 +1976,7 @@ elif page == "AI Image Studio":
         remaining = max(0, AI_MONTHLY_IMAGE_CAP - usage["count"])
         st.metric("Is month AI requests remaining", remaining)
         st.caption(
-            f'Month: {usage["month"]} • App cap: {AI_MONTHLY_IMAGE_CAP} attempts/month. '
+            f'Month: {usage["month"]} â€¢ App cap: {AI_MONTHLY_IMAGE_CAP} attempts/month. '
             "Agar 10 se zyada photos hain, current monthly app cap ke andar wali photos hi process hongi."
         )
         max_batch = min(10, remaining)
@@ -2009,7 +2015,7 @@ elif page == "AI Image Studio":
 
         st.subheader("Permission and output safety")
         allowed_to_edit = st.checkbox(
-            "Main in photos ka owner hoon ya inhe edit karne ki permission mere paas hai; logo agar remove hoga to woh mera/authorized brand logo hoga—not a third-party website, auction, inspection, date/time or location watermark.",
+            "Main in photos ka owner hoon ya inhe edit karne ki permission mere paas hai; logo agar remove hoga to woh mera/authorized brand logo hogaâ€”not a third-party website, auction, inspection, date/time or location watermark.",
             key="batch_ai_permission",
         )
         understand_synthetic = st.checkbox(
@@ -2042,7 +2048,7 @@ elif page == "AI Image Studio":
                 client = OpenAI(api_key=ai_key)
                 outputs = st.session_state.setdefault("ai_generated_images", [])
                 errors = []
-                progress = st.progress(0, text="Batch shuru ho raha hai…")
+                progress = st.progress(0, text="Batch shuru ho raha haiâ€¦")
                 status_box = st.empty()
                 logo_bytes = new_logo.getvalue() if new_logo else None
 
@@ -2065,11 +2071,11 @@ elif page == "AI Image Studio":
                     if usage_now["count"] >= AI_MONTHLY_IMAGE_CAP:
                         errors.append("Monthly app request cap reached; remaining photos skipped.")
                         break
-                    status_box.info(f'AI batch: {i}/{total} — {item["label"]}')
+                    status_box.info(f'AI batch: {i}/{total} â€” {item["label"]}')
                     try:
                         normalized = prepare_image_for_edit(item["bytes"])
                         record_ai_attempt()
-                        with st.spinner(f'{item["label"]}: AI edit chal raha hai…'):
+                        with st.spinner(f'{item["label"]}: AI edit chal raha haiâ€¦'):
                             response = client.images.edit(
                                 model="gpt-image-2.5-sunburst",
                                 image=("car_reference.jpg", normalized, "image/jpeg"),
@@ -2143,7 +2149,7 @@ elif page == "AI Image Studio":
     outputs = st.session_state.get("ai_generated_images", [])
     if outputs:
         st.divider()
-        st.subheader("AI-edited copies — originals unchanged")
+        st.subheader("AI-edited copies â€” originals unchanged")
         zip_output = io.BytesIO()
         with zipfile.ZipFile(zip_output, "w", zipfile.ZIP_DEFLATED) as archive:
             for output in outputs:
@@ -2156,7 +2162,7 @@ elif page == "AI Image Studio":
             key="batch_ai_download_all",
         )
         for i, output in enumerate(reversed(outputs)):
-            with st.expander(f'{output["name"]} • Source: {output["source"]}', expanded=(i == 0)):
+            with st.expander(f'{output["name"]} â€¢ Source: {output["source"]}', expanded=(i == 0)):
                 st.image(output["bytes"], width="stretch")
                 st.download_button(
                     "Download AI-edited JPG", data=output["bytes"],
@@ -2174,6 +2180,8 @@ elif page == "Settings":
 
 st.markdown(
     """<div style="margin-top:2.5rem;padding-top:1rem;border-top:1px solid rgba(153,180,204,.18);color:#71889b;font-size:.74rem;display:flex;justify-content:space-between;gap:.7rem;flex-wrap:wrap;">
-    <span>CarPhotoStudio · Showroom workspace</span><span>Original files stay separate from edited copies</span></div>""",
+    <span>CarPhotoStudio Â· Showroom workspace</span><span>Original files stay separate from edited copies</span></div>""",
     unsafe_allow_html=True,
 )
+
+
