@@ -6,7 +6,7 @@ import zipfile
 from datetime import date
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import streamlit as st
 from PIL import Image
 
