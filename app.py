@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import io
 import json
 import os
@@ -10,9 +10,10 @@ import fitz
 import streamlit as st
 from PIL import Image
 
+
 @st.cache_resource(show_spinner=False)
 def get_lama_model():
-    """Load the LaMa model once and cache it."""
+    """Load LaMa once per Streamlit process; keep model cached between reruns."""
     from simple_lama_inpainting import SimpleLama
     return SimpleLama()
 
@@ -143,7 +144,6 @@ LOCAL_CLIENT_FILE = str(APP_DIR / "client_secret.json")
 TOKEN_FILE = str(APP_DIR / "token.json")
 APP_URL = os.environ.get("APP_URL", "https://carphotostudio.onrender.com/")
 AI_USAGE_FILE = Path(__file__).resolve().parent / "ai_usage.json"
-AI_MONTHLY_IMAGE_CAP = 10
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 # Use a downsized copy in the header to keep reruns responsive.
@@ -240,50 +240,6 @@ def guess_car_details(text):
     return details
 
 
-def get_openai_api_key():
-    """Read API key from environment or Streamlit secrets without displaying it."""
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if key:
-        return key
-    try:
-        key = str(st.secrets.get("OPENAI_API_KEY", "")).strip()
-        if key:
-            return key
-        openai_section = st.secrets.get("openai", {})
-        if hasattr(openai_section, "get"):
-            return str(openai_section.get("api_key", "")).strip()
-    except Exception:
-        pass
-    return ""
-
-
-def get_ai_usage():
-    """Persist a conservative monthly request counter in the project folder."""
-    month = date.today().strftime("%Y-%m")
-    try:
-        if AI_USAGE_FILE.exists():
-            saved = json.loads(AI_USAGE_FILE.read_text(encoding="utf-8"))
-            if saved.get("month") == month:
-                return {"month": month, "count": max(0, int(saved.get("count", 0)))}
-    except Exception:
-        pass
-    return {"month": month, "count": 0}
-
-
-def record_ai_attempt():
-    """Count an attempt before the paid API call so retries cannot bypass the cap."""
-    usage = get_ai_usage()
-    usage["count"] += 1
-    try:
-        AI_USAGE_FILE.write_text(json.dumps(usage, indent=2), encoding="utf-8")
-    except Exception as exc:
-        raise RuntimeError(
-            "AI usage counter save nahi hua, isliye paid request roki gayi. "
-            "Project folder mein write permission check karo."
-        ) from exc
-    return usage
-
-
 def prepare_image_for_edit(raw_bytes):
     """Normalize a source image to JPEG and limit dimensions/file size before paid editing."""
     if not raw_bytes or len(raw_bytes) > 20 * 1024 * 1024:
@@ -296,49 +252,24 @@ def prepare_image_for_edit(raw_bytes):
         return buffer.getvalue()
 
 
-
 def add_ai_disclaimer(raw_bytes):
-    """Add a compact AI-edited label inside the photo without adding extra space."""
-    from PIL import Image, ImageDraw, ImageFont
-
+    """Mark every output so it cannot be mistaken for an untouched evidence photo."""
+    from PIL import ImageDraw, ImageFont
     with Image.open(io.BytesIO(raw_bytes)) as opened:
         image = opened.convert("RGB")
-
     draw = ImageDraw.Draw(image)
-
-    # Photo ke andar hi chhoti label strip banegi.
-    band_height = max(24, min(42, image.height // 24))
-    draw.rectangle(
-        (0, 0, image.width, band_height),
-        fill=(20, 20, 20),
-    )
-
-    label = "AI-EDITED COPY - NOT ORIGINAL PHOTO"
-
+    band_height = max(36, image.height // 14)
+    y0 = image.height - band_height
+    draw.rectangle((0, y0, image.width, image.height), fill=(20, 20, 20))
+    label = "AI-EDITED / ILLUSTRATIVE - NOT ORIGINAL PHOTO"
     try:
-        font_size = max(10, min(18, image.width // 70))
-        font = ImageFont.truetype("arial.ttf", font_size)
+        font = ImageFont.truetype("arial.ttf", max(14, image.width // 55))
     except OSError:
         font = ImageFont.load_default()
-
-    text_y = max(2, (band_height - 14) // 2)
-
-    draw.text(
-        (8, text_y),
-        label,
-        fill=(255, 255, 255),
-        font=font,
-    )
-
-    output = io.BytesIO()
-    image.save(
-        output,
-        format="JPEG",
-        quality=92,
-        optimize=True,
-    )
-
-    return output.getvalue()
+    draw.text((max(8, image.width // 60), y0 + band_height // 4), label, fill=(255, 255, 255), font=font)
+    out = io.BytesIO()
+    image.save(out, format="JPEG", quality=92, optimize=True)
+    return out.getvalue()
 
 
 
@@ -572,7 +503,6 @@ def enable_folder_link(service, folder_id):
 page = st.sidebar.radio(
     "Menu",
     ["Dashboard", "Upload PDF", "My Photos", "Website Analyzer", "Logo Removal", "Non-AI Logo Removal", "Add New Logo", "Car Listing", "Google Drive", "Settings"],
-)
 
 if page == "Dashboard":
     st.markdown(
@@ -1070,518 +1000,16 @@ elif page == "Website Analyzer":
                 pass
         st.caption("Note: har website ki saari photos milna guaranteed nahi. Website restrictions, lazy loading aur JavaScript galleries ki wajah se kuch photos miss ho sakti hain.")
 
-
-elif page == "Automatic AI Cleanup":
-    st.header("âœ¨ Automatic AI Logo Cleanup â€” Batch")
-    st.write(
-        "PDF upload karo, uske embedded car photos extract karo, apne/authorized logo ki clean reference image do, "
-        "aur available photos ko ek batch mein process karo. Rectangle manually draw karne ki zaroorat nahi."
-    )
-    st.warning(
-        "Sirf apne ya authorized showroom logo ke liye. AI reference image se matching logo pehchanne ki koshish karega; "
-        "third-party source watermarks, date/time/location stamps, inspection marks aur provenance labels ko preserve karne "
-        "ki instruction di gayi hai. AI results perfect nahi hote; output AI-edited copy hota hai, original evidence nahi."
-    )
-
-    usage = get_ai_usage()
-    remaining = max(0, AI_MONTHLY_IMAGE_CAP - usage["count"])
-    c1, c2 = st.columns(2)
-    c1.metric("Monthly AI requests remaining", remaining)
-    c2.metric("App monthly cap", AI_MONTHLY_IMAGE_CAP)
-    st.caption(
-        "Ek photo par ek paid image-edit request lagegi. App cap rupee mein guaranteed billing hard-stop nahi hai; "
-        "OpenAI Platform par alag usage/billing limits bhi set karna."
-    )
-
-    input_mode = st.radio(
-        "Photos kahan se leni hain?",
-        ["Upload PDF(s) â€” auto-extract", "My Photos (already extracted)", "Upload multiple JPG/PNG", "Website Analyzer imports"],
-        key="auto_ai_cleanup_input_mode_v1",
-    )
-    source_items = []
-    selected_items = []
-    if input_mode == "Upload PDF(s) â€” auto-extract":
-        pdf_uploads = st.file_uploader(
-            "PDF file(s) upload karo", type=["pdf"], accept_multiple_files=True,
-            key="auto_ai_cleanup_pdfs_v1",
-        )
-        if pdf_uploads and st.button("PDF se saari embedded photos extract karo", key="auto_ai_extract_pdf_button_v1"):
-            newly_extracted, extract_errors = [], []
-            for pdf_upload in pdf_uploads:
-                try:
-                    newly_extracted.extend(extract_pdf_embedded_car_photos(pdf_upload.getvalue(), pdf_upload.name))
-                except Exception as exc:
-                    extract_errors.append(f"{pdf_upload.name}: {str(exc)[:180]}")
-            st.session_state["auto_ai_cleanup_extracted_v1"] = newly_extracted
-            st.session_state["auto_ai_cleanup_extracted_names_v1"] = [p.name for p in pdf_uploads]
-            st.session_state["auto_ai_cleanup_extract_errors_v1"] = extract_errors
-        source_items = st.session_state.get("auto_ai_cleanup_extracted_v1", [])
-        current_names = [p.name for p in (pdf_uploads or [])]
-        saved_names = st.session_state.get("auto_ai_cleanup_extracted_names_v1", [])
-        if current_names != saved_names:
-            source_items = []
-        if st.session_state.get("auto_ai_cleanup_extract_errors_v1"):
-            for issue in st.session_state["auto_ai_cleanup_extract_errors_v1"]:
-                st.warning(issue)
-        if pdf_uploads and not source_items:
-            st.info("PDF select karne ke baad upar wala Extract button dabao. PDF mein embedded car photos honi chahiye.")
-    elif input_mode == "My Photos (already extracted)":
-        source_items = [
-            {"label": p.get("name", f"photo_{i+1}.jpg"), "bytes": p["bytes"]}
-            for i, p in enumerate(st.session_state.get("photos", [])) if p.get("bytes")
-        ]
-        if not source_items:
-            st.info("Pehle Upload PDF â†’ Extract Photos chalao, ya Automatic AI Cleanup mein PDF upload mode use karo.")
-    elif input_mode == "Upload multiple JPG/PNG":
-        image_uploads = st.file_uploader(
-            "JPG / PNG / WebP photos select karo", type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=True, key="auto_ai_cleanup_images_v1",
-        )
-        source_items = [{"label": u.name, "bytes": u.getvalue()} for u in (image_uploads or [])]
-    else:
-        website_data = st.session_state.get("website_analyzer_data", {})
-        source_items = [
-            {"label": f"website_photo_{i+1}.jpg", "bytes": p["bytes"]}
-            for i, p in enumerate(website_data.get("images", [])) if p.get("bytes")
-        ]
-
-    logo_reference_upload = st.file_uploader(
-        "Apne/authorized purane showroom logo ki reference image upload karo (PNG transparent recommended)",
-        type=["png", "jpg", "jpeg", "webp"], key="auto_ai_cleanup_old_logo_reference_v1",
-    )
-    add_new_logo = st.checkbox("AI cleanup ke baad mera naya showroom logo bhi saari processed photos par lagao", key="auto_ai_cleanup_add_new_logo_v1")
-    new_logo_upload = None
-    new_logo_position = "Bottom-right"
-    new_logo_width = 12
-    new_logo_margin = 2.0
-    if add_new_logo:
-        new_logo_upload = st.file_uploader(
-            "Naya showroom logo upload karo", type=["png", "jpg", "jpeg", "webp"],
-            key="auto_ai_cleanup_new_logo_upload_v1",
-        )
-        lx, ly, lz = st.columns(3)
-        with lx:
-            new_logo_position = st.selectbox("Naye logo ki position", ["Top-left", "Top-right", "Bottom-left", "Bottom-right"], index=3, key="auto_ai_cleanup_new_logo_position_v1")
-        with ly:
-            new_logo_width = st.slider("Logo width (%)", 3, 25, 12, key="auto_ai_cleanup_new_logo_width_v1")
-        with lz:
-            new_logo_margin = st.slider("Margin (%)", 0.0, 8.0, 2.0, 0.5, key="auto_ai_cleanup_new_logo_margin_v1")
-
-    if source_items:
-        st.success(f"{len(source_items)} source photo(s) available.")
-        max_allowed = min(len(source_items), remaining, AI_MONTHLY_IMAGE_CAP)
-        labels = [item["label"] for item in source_items]
-        _old_selection = st.session_state.get("auto_ai_cleanup_selected_v1", [])
-        st.session_state["auto_ai_cleanup_selected_v1"] = [v for v in _old_selection if v in labels][:max_allowed]
-        if max_allowed > 0 and st.button(f"Select first {max_allowed} photo(s) within monthly cap", key="auto_ai_cleanup_select_all_v1"):
-            st.session_state["auto_ai_cleanup_selected_v1"] = labels[:max_allowed]
-        chosen_labels = st.multiselect(
-            "Photos for AI batch (one paid request per selected photo)", labels,
-            max_selections=max(1, max_allowed), key="auto_ai_cleanup_selected_v1",
-        )
-        selected_items = [item for item in source_items if item["label"] in chosen_labels]
-        if len(source_items) > max_allowed:
-            st.info(f"Abhi {remaining} request(s) available hain, isliye is run mein maximum {max_allowed} photo(s) process ho sakti hain.")
-        if selected_items:
-            with st.expander("Selected photo preview", expanded=False):
-                preview_cols = st.columns(min(3, len(selected_items)))
-                for idx, item in enumerate(selected_items[:9]):
-                    with preview_cols[idx % len(preview_cols)]:
-                        st.image(item["bytes"], caption=item["label"], width="stretch")
-
-    own_logo_permission = st.checkbox(
-        "Main confirm karta/karti hoon ki reference mein diya gaya logo mera hai ya mujhe use edit karne ki permission hai.",
-        key="auto_ai_cleanup_authorized_v1",
-    )
-    ai_edited_ack = st.checkbox(
-        "Main samajhta/samajhti hoon ki AI edited copy mein car, damage ya background details badal sakti hain; originals safe rahengi.",
-        key="auto_ai_cleanup_ack_v1",
-    )
-    api_key = get_openai_api_key()
-    if not api_key:
-        st.error("OpenAI API key read nahi ho rahi. .streamlit/secrets.toml check karo; key yahan paste mat karo.")
-
-    can_run_auto = bool(
-        source_items and selected_items if source_items else False
-    ) if source_items else False
-    can_run_auto = bool(
-        source_items and logo_reference_upload and own_logo_permission and ai_edited_ack and api_key
-        and remaining > 0 and selected_items and (not add_new_logo or new_logo_upload is not None)
-    ) if source_items else False
-
-    if st.button(
-        "AI se selected logo clean karo" + (" + naya logo add karo" if add_new_logo else ""),
-        type="primary", disabled=not can_run_auto, key="auto_ai_cleanup_run_v1",
-    ):
-        if len(selected_items) > remaining:
-            st.error(f"Sirf {remaining} requests baaki hain. Photos selection kam karo.")
-        else:
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=api_key)
-                outputs = st.session_state.setdefault("auto_ai_cleanup_outputs_v1", [])
-                errors = []
-                progress = st.progress(0, text="AI batch shuru ho raha haiâ€¦")
-                logo_ref_bytes = logo_reference_upload.getvalue()
-                # Normalize reference logo while preserving its transparent pixels if present.
-                with Image.open(io.BytesIO(logo_ref_bytes)) as logo_ref_img:
-                    logo_ref = logo_ref_img.convert("RGBA")
-                    logo_ref.thumbnail((900, 900), Image.Resampling.LANCZOS)
-                    ref_buf = io.BytesIO()
-                    logo_ref.save(ref_buf, format="PNG", optimize=True)
-                    logo_ref_bytes = ref_buf.getvalue()
-                new_logo_bytes = new_logo_upload.getvalue() if add_new_logo and new_logo_upload else None
-
-                for i, item in enumerate(selected_items, start=1):
-                    usage_now = get_ai_usage()
-                    if usage_now["count"] >= AI_MONTHLY_IMAGE_CAP:
-                        errors.append("Monthly app cap reached; baaki photos skip kar di gayi.")
-                        break
-                    try:
-                        normalized = prepare_image_for_edit(item["bytes"])
-                        record_ai_attempt()
-                        with st.spinner(f'{item["label"]}: AI cleanupâ€¦'):
-                            response = client.images.edit(
-                                model="gpt-image-2.5-sunburst",
-                                image=[
-                                    ("target_car_photo.jpg", normalized, "image/jpeg"),
-                                    ("authorized_logo_reference.png", logo_ref_bytes, "image/png"),
-                                ],
-                                prompt=(
-                                    "The FIRST input image is the target vehicle photo. The SECOND input image is a reference for the user's own/authorized showroom logo to identify. "
-                                    "Edit the FIRST image only. Locate and remove only an overlaid occurrence matching the SECOND reference logo, and naturally reconstruct the small background area underneath it. "
-                                    "Keep the vehicle's body, color, wheels, background, camera angle, mechanical condition and all visible damage as close to the first input as possible. "
-                                    "Do not remove manufacturer badges attached to the vehicle. Do not remove or alter any third-party marketplace/auction branding, source watermarks, "
-                                    "date/time/location stamps, inspection or insurance labels, signatures, registration text, or other provenance marks. Do not add new text. "
-                                    "If the reference logo is not visible as an overlay in the first image, leave the image unchanged rather than removing unrelated content. Return one photo-sized photorealistic edited copy."
-                                ),
-                                quality="low",
-                                size="auto",
-                                output_format="jpeg",
-                            )
-                        if not response.data or not response.data[0].b64_json:
-                            raise RuntimeError("API se image output nahi mila.")
-                        generated = base64.b64decode(response.data[0].b64_json)
-                        if new_logo_bytes:
-                            generated = add_brand_logo_copy(
-                                generated, new_logo_bytes, new_logo_position,
-                                new_logo_width, new_logo_margin,
-                            )
-                        marked = add_ai_disclaimer_header(generated)
-                        stem = Path(item["label"]).stem.replace(" ", "_")[:48]
-                        outputs.append({
-                            "name": f"AI_Cleaned_{stem}_{len(outputs)+1}.jpg",
-                            "source": item["label"],
-                            "bytes": marked,
-                            "created_month": usage_now["month"],
-                            "new_logo_added": bool(new_logo_bytes),
-                        })
-                    except Exception as exc:
-                        errors.append(f'{item["label"]}: {str(exc)[:240]}')
-                    progress.progress(i / len(selected_items), text=f"Processed {i}/{len(selected_items)}")
-                st.session_state["auto_ai_cleanup_errors_v1"] = errors
-                st.rerun()
-            except ImportError:
-                st.error("OpenAI library install nahi hai. Terminal mein: python -m pip install --upgrade openai")
-            except Exception as exc:
-                st.error("AI batch start nahi ho saki. Billing, API key, model access aur internet check karo.")
-                st.caption(f"Technical detail: {str(exc)[:350]}")
-
-    cleanup_errors = st.session_state.get("auto_ai_cleanup_errors_v1", [])
-    if cleanup_errors:
-        st.warning("Kuch photos process nahi ho paayin:")
-        for issue in cleanup_errors:
-            st.write(f"- {issue}")
-    cleanup_outputs = st.session_state.get("auto_ai_cleanup_outputs_v1", [])
-    if cleanup_outputs:
-        st.divider()
-        st.subheader("AI-edited batch outputs â€” originals unchanged")
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-            for output in cleanup_outputs:
-                archive.writestr(output["name"], output["bytes"])
-        st.download_button(
-            "Download all AI-edited photos (ZIP)", data=zip_buffer.getvalue(),
-            file_name="CarPhotoStudio_Auto_AI_Cleanup.zip", mime="application/zip",
-            key="auto_ai_cleanup_zip_v1",
-        )
-        for i, output in enumerate(reversed(cleanup_outputs)):
-            with st.expander(f'{output["name"]} â€¢ source: {output["source"]}', expanded=(i == 0)):
-                st.image(output["bytes"], width="stretch")
-                st.download_button(
-                    "Download edited JPG", data=output["bytes"], file_name=output["name"],
-                    mime="image/jpeg", key=f"auto_ai_cleanup_download_{len(cleanup_outputs)-i-1}",
-                )
-
-
 elif page == "Logo Removal":
-    st.header("ðŸ§½ AI Logo Removal â€” Manual Area + Batch")
+    st.header("ðŸ§½ Local LaMa AI Logo Cleanup â€” Batch Photos")
     st.write(
-        "Apne ya authorized showroom logo ko pehle ek photo par rectangle se mark karo. "
-        "Wahi relative area selected photos par AI mask ke saath process hoga. Original files unchanged rahengi."
-    )
-    st.warning(
-        "Yeh tool sirf apne/authorized logo overlay ke liye hai. Doosri website/auction ka source watermark, "
-        "date-time/location stamp, inspection/insurance marks, registration details ya provenance labels remove na karein. "
-        "AI result badal sakta hai; output original inspection/auction evidence nahi hai."
-    )
-
-    usage = get_ai_usage()
-    remaining = max(0, AI_MONTHLY_IMAGE_CAP - usage["count"])
-    st.metric("Is mahine ke AI edit attempts bache", remaining)
-    st.caption(
-        "Har photo ke liye alag paid API request hoti hai. App cap 10 requests/month hai; "
-        "yeh â‚¹500 ka guaranteed billing hard-stop nahi hai."
-    )
-
-    source_choice = st.radio(
-        "Photos kahan se leni hain?",
-        ["PDF / My Photos", "Upload multiple photos", "Website Analyzer imports"],
-        key="separate_logo_removal_source_v2",
-    )
-    source_items = []
-    if source_choice == "PDF / My Photos":
-        source_items = [
-            {"label": f'{i+1}. {photo.get("name", "photo")}', "bytes": photo["bytes"]}
-            for i, photo in enumerate(st.session_state.get("photos", []))
-            if photo.get("bytes")
-        ]
-        if not source_items:
-            st.info("Pehle Upload PDF â†’ Extract Photos karo.")
-    elif source_choice == "Upload multiple photos":
-        uploads = st.file_uploader(
-            "Apni/authorized JPG, PNG ya WebP photos select karo",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=True,
-            key="separate_logo_removal_uploads_v2",
-        )
-        source_items = [{"label": upload.name, "bytes": upload.getvalue()} for upload in (uploads or [])]
-    else:
-        website_data = st.session_state.get("website_analyzer_data", {})
-        source_items = [
-            {"label": f'Website import {i+1}', "bytes": item["bytes"]}
-            for i, item in enumerate(website_data.get("images", []))
-            if item.get("bytes")
-        ]
-        if not source_items:
-            st.info("Website Analyzer se photos import karo ya Upload multiple photos select karo.")
-
-    if source_items:
-        st.write(f"Available photos: {len(source_items)}")
-        max_allowed = min(AI_MONTHLY_IMAGE_CAP, remaining, len(source_items))
-        labels = [item["label"] for item in source_items]
-        if max_allowed > 0 and st.button(
-            f"Select all available photos (maximum {max_allowed})",
-            key="separate_logo_removal_select_all_v2",
-        ):
-            st.session_state["separate_logo_removal_selected_v2"] = labels[:max_allowed]
-
-        _old_logo_selection = st.session_state.get("separate_logo_removal_selected_v2", [])
-        st.session_state["separate_logo_removal_selected_v2"] = [v for v in _old_logo_selection if v in labels][:max_allowed]
-        selected_labels = st.multiselect(
-            f"Batch ke liye photos chuno (monthly limit ke hisaab se maximum {max_allowed})",
-            labels,
-            max_selections=max(1, max_allowed),
-            disabled=(max_allowed == 0),
-            key="separate_logo_removal_selected_v2",
-        )
-        selected_items = [item for item in source_items if item["label"] in selected_labels]
-        if len(source_items) > max_allowed:
-            st.info(
-                f"Is month mein {remaining} AI request(s) baaki hain. Har photo ek request leti hai, "
-                f"isliye is run mein maximum {max_allowed} process ho sakti hain."
-            )
-
-        if selected_items:
-            st.subheader("Step 1 â€” Apne logo ka area manually mark karo")
-            reference_label = st.selectbox(
-                "Ek representative photo chuno; us par logo ke ird-gird rectangle draw karo",
-                labels,
-                key="ai_logo_removal_reference_v2",
-            )
-            reference_item = next(item for item in source_items if item["label"] == reference_label)
-            _last_ai_reference = st.session_state.get("ai_logo_removal_last_reference_v2")
-            if _last_ai_reference != reference_label:
-                st.session_state.pop("ai_logo_removal_rect_pct_v2", None)
-                st.session_state["ai_logo_removal_last_reference_v2"] = reference_label
-            try:
-                from PIL import ImageDraw
-                from streamlit_drawable_canvas import st_canvas
-                with Image.open(io.BytesIO(reference_item["bytes"])) as im0:
-                    preview_image = im0.convert("RGB")
-                max_w, max_h = 900, 620
-                scale = min(max_w / preview_image.width, max_h / preview_image.height, 1.0)
-                canvas_w = max(1, int(preview_image.width * scale))
-                canvas_h = max(1, int(preview_image.height * scale))
-                canvas_bg = preview_image.resize((canvas_w, canvas_h), Image.Resampling.LANCZOS)
-                st.caption("Mouse ka left button daba kar apne showroom logo ke charo taraf rectangle draw karo. Yeh relative area selected batch par apply hoga.")
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 0, 0, 0.18)",
-                    stroke_width=3,
-                    stroke_color="#ff3030",
-                    background_image=canvas_bg,
-                    update_streamlit=True,
-                    height=canvas_h,
-                    width=canvas_w,
-                    drawing_mode="rect",
-                    key=f"ai_logo_removal_canvas_v2_{labels.index(reference_label)}",
-                )
-                selected_rect = None
-                if canvas_result.json_data and canvas_result.json_data.get("objects"):
-                    rects = [obj for obj in canvas_result.json_data["objects"] if obj.get("type") == "rect"]
-                    if rects:
-                        selected_rect = rects[-1]
-                if selected_rect:
-                    left_px = max(0.0, float(selected_rect.get("left", 0)))
-                    top_px = max(0.0, float(selected_rect.get("top", 0)))
-                    width_px = max(1.0, float(selected_rect.get("width", 1)) * float(selected_rect.get("scaleX", 1)))
-                    height_px = max(1.0, float(selected_rect.get("height", 1)) * float(selected_rect.get("scaleY", 1)))
-                    left_px = min(left_px, canvas_w - 1)
-                    top_px = min(top_px, canvas_h - 1)
-                    width_px = min(width_px, canvas_w - left_px)
-                    height_px = min(height_px, canvas_h - top_px)
-                    rect_pct = (left_px / canvas_w * 100, top_px / canvas_h * 100,
-                                width_px / canvas_w * 100, height_px / canvas_h * 100)
-                    st.session_state["ai_logo_removal_rect_pct_v2"] = rect_pct
-                rect_pct = st.session_state.get("ai_logo_removal_rect_pct_v2")
-                if rect_pct:
-                    st.success(
-                        f"Selected area: left {rect_pct[0]:.1f}%, top {rect_pct[1]:.1f}%, "
-                        f"width {rect_pct[2]:.1f}%, height {rect_pct[3]:.1f}%"
-                    )
-                else:
-                    st.info("Pehle photo par rectangle draw karo. Phir batch process karna.")
-            except Exception as canvas_error:
-                st.warning(f"Manual drawing tool abhi kaam nahi kar raha ({type(canvas_error).__name__}). Neeche diye sliders se logo ka area select kar sakte ho.")
-                rect_cols = st.columns(2)
-                with rect_cols[0]:
-                    roi_left = st.slider("Logo left (%)", 0, 95, 75, key="ai_logo_roi_left_v2")
-                    roi_top = st.slider("Logo top (%)", 0, 95, 80, key="ai_logo_roi_top_v2")
-                with rect_cols[1]:
-                    roi_width = st.slider("Logo width (%)", 1, 50, 20, key="ai_logo_roi_width_v2")
-                    roi_height = st.slider("Logo height (%)", 1, 50, 12, key="ai_logo_roi_height_v2")
-                rect_pct = (float(roi_left), float(roi_top), float(roi_width), float(roi_height))
-                st.session_state["ai_logo_removal_rect_pct_v2"] = rect_pct
-
-            rect_pct = st.session_state.get("ai_logo_removal_rect_pct_v2")
-            if rect_pct:
-                st.subheader("Step 2 â€” Batch process")
-                st.caption("Same relative area sab selected photos par edit hoga. Agar logo alag jagah hai, un photos ko alag batch mein chalana.")
-
-            consent_own_logo = st.checkbox(
-                "Marked area mein mera apna showroom logo hai ya mujhe ise edit karne ki permission hai.",
-                key="separate_logo_removal_consent_v2",
-            )
-            consent_synthetic = st.checkbox(
-                "Mujhe pata hai ki AI-edited copy banegi, jo car/damage details ko badal sakti hai.",
-                key="separate_logo_removal_synthetic_v2",
-            )
-            can_run = bool(
-                selected_items and rect_pct and consent_own_logo and consent_synthetic
-            )
-            if st.button(
-                "Selected photos par marked logo LaMa se remove karo",
-                type="primary",
-                disabled=not can_run,
-                key="separate_logo_removal_run_v2",
-            ):
-                results = st.session_state.setdefault("separate_logo_removed_images_v2", [])
-                errors = []
-                progress = st.progress(0, text="LaMa batch shuru ho raha hai...")
-                left_pct, top_pct, width_pct, height_pct = rect_pct
-
-                try:
-                    from PIL import ImageDraw
-
-                    for i, item in enumerate(selected_items, start=1):
-                        try:
-                            with Image.open(io.BytesIO(item["bytes"])) as source_image:
-                                image = source_image.convert("RGB")
-
-                            iw, ih = image.size
-                            x1 = max(0, min(iw - 1, round(iw * left_pct / 100)))
-                            y1 = max(0, min(ih - 1, round(ih * top_pct / 100)))
-                            x2 = max( x1 + 1, min(iw, round(iw * (left_pct + width_pct) / 100)))
-                            y2 = max( y1 + 1, min(ih, round(ih * (top_pct + height_pct) / 100)))
-
-                            # LaMa mask: white = fill/inpaint, black = preserve.
-                            mask_image = Image.new("L", (iw, ih), 0)
-                            ImageDraw.Draw(mask_image).rectangle(
-                                (x1, y1, x2 - 1, y2 - 1), fill=255
-                            )
-
-                            with st.spinner(f'{item["label"]}: LaMa processing...'):
-                                processed_image = get_lama_model()(image, mask_image).convert("RGB")
-
-                            output_buffer = io.BytesIO()
-                            processed_image.save(
-                                output_buffer, format="JPEG", quality=94, optimize=True
-                            )
-                            marked_bytes = add_ai_disclaimer(output_buffer.getvalue())
-                            stem = Path(item["label"]).stem.replace(" ", "_")[:48]
-
-                            results.append({
-                                "name": f"LAMA_LOGO_REMOVED_{stem}_{len(results)+1}.jpg",
-                                "source": item["label"],
-                                "bytes": marked_bytes,
-                            })
-
-                        except Exception as exc:
-                            errors.append(f'{item["label"]}: {str(exc)[:250]}')
-
-                        progress.progress(
-                            i / len(selected_items),
-                            text=f"LaMa processed {i}/{len(selected_items)}",
-                        )
-
-                    st.session_state["separate_logo_removal_errors_v2"] = errors
-                    st.rerun()
-
-                except Exception as exc:
-                    st.error("LaMa batch start nahi ho saka. LaMa installation aur model download check karo.")
-                    st.caption(f"Technical detail: {str(exc)[:400]}")
-
-    removal_errors = st.session_state.get("separate_logo_removal_errors_v2", [])
-    if removal_errors:
-        st.warning("Kuch photos process nahi ho paayin:")
-        for error in removal_errors:
-            st.write(f"- {error}")
-    removed_outputs = st.session_state.get("separate_logo_removed_images_v2", [])
-    if removed_outputs:
-        st.divider()
-        st.subheader("AI logo removal outputs â€” originals unchanged")
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-            for output in removed_outputs:
-                archive.writestr(output["name"], output["bytes"])
-        st.download_button(
-            "Download AI logo-removed photos (ZIP)",
-            data=zip_buffer.getvalue(),
-            file_name="CarPhotoStudio_AI_Logo_Removal.zip",
-            mime="application/zip",
-            key="separate_logo_removal_zip_v2",
-        )
-        for i, output in enumerate(reversed(removed_outputs)):
-            with st.expander(f'{output["name"]} â€¢ Source: {output["source"]}', expanded=(i == 0)):
-                st.image(output["bytes"], width="stretch")
-                st.download_button(
-                    "Download this AI-edited JPG",
-                    data=output["bytes"],
-                    file_name=output["name"],
-                    mime="image/jpeg",
-                    key=f'separate_logo_removed_download_v2_{len(removed_outputs)-i-1}',
-                )
-
-elif page == "Non-AI Logo Removal":
-    st.header("ðŸ§½ Non-AI Logo Removal â€” Batch Photos")
-    st.write(
-        "Yeh local processing tool sirf aapke apne ya authorized logo/overlay ke liye hai. "
-        "OpenCV inpainting selected area ka background approximate karta hai; perfect restoration guaranteed nahi."
+        "Yeh local AI processing tool sirf aapke apne ya authorized logo/overlay ke liye hai. "
+        "LaMa AI selected area ke aas-paas ke pixels se background reconstruct karne ki koshish karega; perfect result guaranteed nahi."
     )
     st.warning(
         "Sirf apne ya authorized showroom logo/overlay ke liye use karein. Source website/auction watermark, "
         "date-time/location stamp, inspection/insurance label, registration details ya provenance marks ko na hatayein. "
-        "Non-AI tool background ko perfect tareeke se dobara nahi bana sakta. Original photos unchanged rahengi."
+        "AI reconstruction hamesha perfect nahi hoti. Original photos unchanged rahengi aur edited copies alag milengi."
     )
 
     non_ai_source_choice = st.radio(
@@ -1667,56 +1095,27 @@ elif page == "Non-AI Logo Removal":
             cv2 = None
             np = None
 
-        method_choice = st.radio(
-            "Logo removal method chuno",
-            ["OpenCV (Non-AI)", "LaMa AI"],
-            horizontal=True,
-            key="non_ai_logo_method_choice",
-        )
-
-        try:
-            from simple_lama_inpainting import SimpleLama
-            lama_available = True
-        except ImportError:
-            lama_available = False
-
-        if method_choice == "LaMa AI":
-            non_ai_method = "LaMa AI (inpainting)"
-            if lama_available:
-                st.success("LaMa AI ready hai. Selected area ko surrounding image se fill kiya jayega.")
-            else:
-                st.error("LaMa install nahi hai. Terminal mein: python -m pip install simple-lama-inpainting")
+        non_ai_method = "LaMa AI inpainting"
+        if cv2_available:
+            st.success("LaMa AI mode selected: model logo area ke aas-paas ke background se reconstruction karega.")
         else:
-            non_ai_method = "OpenCV inpainting (background approximate karega)"
-            if cv2_available:
-                st.success("OpenCV inpainting ready hai. Existing Non-AI method available hai.")
-            else:
-                st.error("OpenCV install nahi hai. Requirements mein opencv-python-headless add karke install/redeploy karo.")
+            st.error("Mask banane ke liye OpenCV install hona zaroori hai. Koi white rectangle fallback nahi hoga.")
         inpaint_radius = st.slider(
-            "Inpainting radius (higher = more surrounding fill; try 3â€“9)",
-            3, 15, 5,
+            "Mask expansion (logo ke edge ke bahar kitna area include karein)",
+            1, 9, 1,
             key="non_ai_logo_inpaint_radius",
-            disabled=(method_choice != "OpenCV (Non-AI)" or not cv2_available),
+            disabled=(not cv2_available),
         )
         consent_non_ai = st.checkbox(
             "Main confirm karta/karti hoon ki selected area mera apna logo ya authorized overlay hai.",
             key="non_ai_logo_consent",
         )
-        if method_choice == "LaMa AI":
-            st.caption("LaMa local model hai; OpenAI API key/charge nahi chahiye. Result AI-edited copy hai aur details badal sakti hain.")
-        else:
-            st.caption("OpenCV local Non-AI method hai; API charge nahi lagta. Complex background ka result uneven ho sakta hai.")
+        st.caption("LaMa model local computer par chalega; OpenAI API charge nahi lagega. Pehli baar model load hone mein waqt lag sakta hai. Rectangle ke andar ke details badal sakte hain.")
 
         if st.button(
-            "Sab selected photos par non-AI logo removal karo",
+            "LaMa AI se sab selected photos clean karo",
             type="primary",
-            disabled=(
-                not consent_non_ai
-                or not manual_rect_selected
-                or not non_ai_items
-                or (method_choice == "OpenCV (Non-AI)" and not cv2_available)
-                or (method_choice == "LaMa AI" and not lama_available)
-            ),
+            disabled=(not consent_non_ai or not manual_rect_selected or not cv2_available or not non_ai_items),
             key="non_ai_logo_run",
         ):
             non_ai_outputs = []
@@ -1731,30 +1130,24 @@ elif page == "Non-AI Logo Removal":
                     ya = min(im.height - 1, round(im.height * logo_top / 100))
                     xb = min(im.width, max(xa + 1, round(im.width * (logo_left + logo_width) / 100)))
                     yb = min(im.height, max(ya + 1, round(im.height * (logo_top + logo_height) / 100)))
-                    if method_choice == "LaMa AI":
-                        from PIL import ImageDraw
-                        lama_mask = Image.new("L", (im.width, im.height), 0)
-                        ImageDraw.Draw(lama_mask).rectangle(
-                            (xa, ya, max(xa, xb - 1), max(ya, yb - 1)),
-                            fill=255,
-                        )
-                        result_im = get_lama_model()(im, lama_mask).convert("RGB")
-                    else:
-                        if not cv2_available:
-                            raise RuntimeError("OpenCV missing hai. opencv-python-headless install karo.")
-                        arr = np.array(im)
-                        mask = np.zeros((im.height, im.width), dtype=np.uint8)
-                        # Small dilation gives OpenCV some edge context.
-                        cv2.rectangle(mask, (xa, ya), (max(xa, xb - 1), max(ya, yb - 1)), 255, thickness=-1)
-                        kernel = np.ones((3, 3), np.uint8)
-                        mask = cv2.dilate(mask, kernel, iterations=1)
-                        processed = cv2.inpaint(arr, mask, float(inpaint_radius), cv2.INPAINT_TELEA)
-                        result_im = Image.fromarray(processed)
+                    if not cv2_available:
+                        raise RuntimeError("OpenCV missing hai; white rectangle se replace karna band hai. opencv-python-headless install karo.")
+                    arr = np.array(im)
+                    mask = np.zeros((im.height, im.width), dtype=np.uint8)
+                    # Small dilation gives inpainting a little edge context without expanding the selected area too much.
+                    cv2.rectangle(mask, (xa, ya), (max(xa, xb - 1), max(ya, yb - 1)), 255, thickness=-1)
+                    kernel_size = max(3, int(inpaint_radius) * 2 + 1)
+                    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+                    mask = cv2.dilate(mask, kernel, iterations=1)
+                    # LaMa expects the source image and a grayscale mask where white pixels are replaced.
+                    mask_image = Image.fromarray(mask, mode="L")
+                    lama_model = get_lama_model()
+                    result_im = lama_model(im, mask_image).convert("RGB")
                     buffer = io.BytesIO()
                     result_im.save(buffer, format="JPEG", quality=94, optimize=True)
                     stem = Path(item["label"]).stem.replace(" ", "_")[:60]
                     non_ai_outputs.append({
-                        "name": f"{'LAMA_AI' if method_choice == 'LaMa AI' else 'NON_AI'}_LOGO_REMOVED_{stem}_{idx}.jpg",
+                        "name": f"NON_AI_LOGO_REMOVED_{stem}_{idx}.jpg",
                         "bytes": buffer.getvalue(),
                         "source": item["label"],
                     })
@@ -1773,15 +1166,15 @@ elif page == "Non-AI Logo Removal":
     non_ai_outputs = st.session_state.get("non_ai_logo_outputs", [])
     if non_ai_outputs:
         st.divider()
-        st.subheader(f"{'LaMa AI' if method_choice == 'LaMa AI' else 'Non-AI'} edited photos ready: {len(non_ai_outputs)} (originals unchanged)")
+        st.subheader(f"Non-AI edited photos ready: {len(non_ai_outputs)} (originals unchanged)")
         zip_stream = io.BytesIO()
         with zipfile.ZipFile(zip_stream, "w", zipfile.ZIP_DEFLATED) as zf:
             for output in non_ai_outputs:
                 zf.writestr(output["name"], output["bytes"])
         st.download_button(
-            "Download all non-AI edited photos (ZIP)",
+            "Download all LaMa AI edited photos (ZIP)",
             data=zip_stream.getvalue(),
-            file_name="CarPhotoStudio_Non_AI_Logo_Removed.zip",
+            file_name="CarPhotoStudio_LaMa_AI_Logo_Removed.zip",
             mime="application/zip",
             key="non_ai_logo_zip_download",
         )
@@ -1963,266 +1356,18 @@ elif page == "Add New Logo":
                 )
 
 elif page == "AI Image Studio":
-    st.header("âœ¨ Batch AI Photo Studio")
-    st.write(
-        "PDF se nikli kai car photos ko ek hi batch mein AI se photorealistic edited copies mein badlo. "
-        "Optional: apna naya showroom logo sab output photos par automatically lagao."
-    )
-    st.warning(
-        "AI output ek nayi, synthetic/edited image haiâ€”original photo nahi. AI car ki details, damage, "
-        "number plate ya background badal sakta hai. Output par AI-EDITED label lagaya jayega; ise asli "
-        "inspection, insurance, legal ya auction evidence ke roop mein use na karein."
-    )
+    st.header("âœ¨ Local AI Photo Tools")
     st.info(
-        "Batch mode: selected photos ek hi click mein process hongi, lekin har photo ke liye alag paid API request hoti hai. "
-        "App limit: maximum 10 requests per calendar month. Yeh rupee mein exact hard stop nahi hai; actual API cost model, "
-        "input image aur output par depend karti hai. Official billing/usage limits bhi set karein."
+        "OpenAI-based image generation/editing disable kar diya gaya hai. Local LaMa AI logo-area cleanup ke liye "
+        "left menu mein **Non-AI Logo Removal** kholo. Naya showroom logo lagane ke liye **Add New Logo** page use karo."
     )
-
-    source_choice = st.radio(
-        "Photos kahan se leni hain?",
-        ["PDF / My Photos", "Website Analyzer imports", "Upload my own images"],
-        horizontal=False,
-        key="batch_ai_source_choice",
-    )
-    source_items = []
-    if source_choice == "PDF / My Photos":
-        source_items = [
-            {"label": f'{i+1}. {p.get("name", "photo")}', "bytes": p["bytes"]}
-            for i, p in enumerate(st.session_state.get("photos", []))
-            if p.get("bytes")
-        ]
-    elif source_choice == "Website Analyzer imports":
-        website_data = st.session_state.get("website_analyzer_data", {})
-        source_items = [
-            {"label": f'Website photo {i+1}', "bytes": p["bytes"]}
-            for i, p in enumerate(website_data.get("images", []))
-            if p.get("bytes")
-        ]
-    else:
-        uploads = st.file_uploader(
-            "Apni JPG / PNG / WebP photos chuno (multiple selection allowed)",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=True,
-            key="batch_ai_uploads",
-        )
-        if uploads:
-            source_items = [
-                {"label": u.name, "bytes": u.getvalue()} for u in uploads
-            ]
-
-    if not source_items:
-        st.info(
-            "Pehle Upload PDF â†’ Extract Photos chalao, Website Analyzer mein permitted photos import karo, "
-            "ya Upload my own images select karke photos choose karo."
-        )
-    else:
-        st.success(f"{len(source_items)} source photo(s) available hain.")
-        labels = [item["label"] for item in source_items]
-        ai_key = get_openai_api_key()
-        usage = get_ai_usage()
-        remaining = max(0, AI_MONTHLY_IMAGE_CAP - usage["count"])
-        st.metric("Is month AI requests remaining", remaining)
-        st.caption(
-            f'Month: {usage["month"]} â€¢ App cap: {AI_MONTHLY_IMAGE_CAP} attempts/month. '
-            "Agar 10 se zyada photos hain, current monthly app cap ke andar wali photos hi process hongi."
-        )
-        max_batch = min(10, remaining)
-        _old_batch_selection = st.session_state.get("batch_ai_selected_labels", [])
-        st.session_state["batch_ai_selected_labels"] = [v for v in _old_batch_selection if v in labels][:max_batch]
-        selected_labels = st.multiselect(
-            f"Ek batch mein photos chuno (abhi maximum {max_batch})",
-            labels,
-            max_selections=max(1, max_batch),
-            disabled=(max_batch == 0),
-            key="batch_ai_selected_labels",
-        )
-        selected_items = [item for item in source_items if item["label"] in selected_labels]
-
-        st.subheader("Optional: apna naya showroom logo lagao")
-        new_logo = st.file_uploader(
-            "Transparent PNG logo best rahega (optional)",
-            type=["png", "jpg", "jpeg", "webp"],
-            key="batch_ai_new_logo",
-        )
-        logo_position = st.selectbox(
-            "Naya logo kahan lagana hai?",
-            ["Top-right", "Top-left", "Bottom-right", "Bottom-left"],
-            index=0,
-            key="batch_ai_logo_position",
-        )
-        logo_width_pct = st.slider(
-            "Logo width (%)", min_value=5, max_value=22, value=13,
-            key="batch_ai_logo_width_pct",
-        )
-        if new_logo:
-            try:
-                st.image(new_logo.getvalue(), caption="Naye logo ka preview", width=180)
-            except Exception:
-                st.error("Logo image open nahi ho rahi. PNG/JPG dobara choose karo.")
-
-        st.subheader("Permission and output safety")
-        allowed_to_edit = st.checkbox(
-            "Main in photos ka owner hoon ya inhe edit karne ki permission mere paas hai; logo agar remove hoga to woh mera/authorized brand logo hogaâ€”not a third-party website, auction, inspection, date/time or location watermark.",
-            key="batch_ai_permission",
-        )
-        understand_synthetic = st.checkbox(
-            "Mujhe samajh hai ki AI output photorealistic ho sakta hai, par original evidence nahi aur car ke details badal sakte hain.",
-            key="batch_ai_synthetic_ack",
-        )
-
-        if not ai_key:
-            st.error(
-                "OpenAI API key read nahi ho rahi. Project ke .streamlit/secrets.toml mein OPENAI_API_KEY setting check karo; key ko chat mein mat bhejo."
-            )
-
-        if selected_items:
-            preview_cols = st.columns(min(3, len(selected_items)))
-            for i, item in enumerate(selected_items):
-                with preview_cols[i % len(preview_cols)]:
-                    st.image(item["bytes"], caption=item["label"], width="stretch")
-
-        can_process = bool(
-            selected_items and ai_key and remaining > 0 and allowed_to_edit and understand_synthetic
-        )
-        if st.button(
-            f"Generate {len(selected_items)} AI-edited copy/copies in one batch",
-            type="primary",
-            disabled=not can_process,
-            key="batch_ai_generate_button",
-        ):
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=ai_key)
-                outputs = st.session_state.setdefault("ai_generated_images", [])
-                errors = []
-                progress = st.progress(0, text="Batch shuru ho raha haiâ€¦")
-                status_box = st.empty()
-                logo_bytes = new_logo.getvalue() if new_logo else None
-
-                prompt = (
-                    "Create a photorealistic AI-EDITED illustrative copy of the supplied car photograph. "
-                    "If, and only if, an overlay belonging to the image owner or explicitly authorized for removal is present, "
-                    "remove that owner's own brand logo overlay and naturally reconstruct only that covered background area. "
-                    "Do NOT remove, obscure, imitate, or alter third-party website branding, auction/source watermarks, "
-                    "inspection/insurance markings, date/time or location stamps, signatures, document labels, or provenance marks. "
-                    "Do not remove the vehicle manufacturer's actual badge/emblem. Keep the same general vehicle, paint color, "
-                    "viewpoint and scene, and preserve visible damage as closely as possible; do not improve, conceal, or invent damage. "
-                    "Do not invent readable registration plates or text. This output is a newly generated illustrative edit, "
-                    "not a factual or documentary original."
-                )
-
-                total = len(selected_items)
-                for i, item in enumerate(selected_items, start=1):
-                    # Save usage before each paid call so retries cannot bypass the local app cap.
-                    usage_now = get_ai_usage()
-                    if usage_now["count"] >= AI_MONTHLY_IMAGE_CAP:
-                        errors.append("Monthly app request cap reached; remaining photos skipped.")
-                        break
-                    status_box.info(f'AI batch: {i}/{total} â€” {item["label"]}')
-                    try:
-                        normalized = prepare_image_for_edit(item["bytes"])
-                        record_ai_attempt()
-                        with st.spinner(f'{item["label"]}: AI edit chal raha haiâ€¦'):
-                            response = client.images.edit(
-                                model="gpt-image-2.5-sunburst",
-                                image=("car_reference.jpg", normalized, "image/jpeg"),
-                                prompt=prompt,
-                                quality="low",
-                                size="auto",
-                                output_format="jpeg",
-                            )
-                        if not response.data or not response.data[0].b64_json:
-                            raise RuntimeError("AI se image output nahi mila.")
-                        generated_raw = base64.b64decode(response.data[0].b64_json)
-                        marked = add_ai_disclaimer(generated_raw)
-
-                        # Add the user's own new logo to the AI-generated COPY only.
-                        if logo_bytes:
-                            from PIL import ImageDraw
-                            with Image.open(io.BytesIO(marked)) as im:
-                                canvas = im.convert("RGBA")
-                            with Image.open(io.BytesIO(logo_bytes)) as raw_logo:
-                                brand = raw_logo.convert("RGBA")
-                            max_w = max(24, int(canvas.width * logo_width_pct / 100))
-                            max_h = max(24, int(canvas.height * 0.20))
-                            scale = min(max_w / brand.width, max_h / brand.height)
-                            brand = brand.resize(
-                                (max(1, int(brand.width * scale)), max(1, int(brand.height * scale))),
-                                Image.Resampling.LANCZOS,
-                            )
-                            margin = max(8, int(canvas.width * 0.02))
-                            if logo_position == "Top-left":
-                                xy = (margin, margin)
-                            elif logo_position == "Top-right":
-                                xy = (canvas.width - brand.width - margin, margin)
-                            elif logo_position == "Bottom-left":
-                                xy = (margin, canvas.height - brand.height - margin - max(36, canvas.height // 14))
-                            else:
-                                xy = (canvas.width - brand.width - margin, canvas.height - brand.height - margin - max(36, canvas.height // 14))
-                            canvas.alpha_composite(brand, dest=(max(0, xy[0]), max(0, xy[1])))
-                            logo_output = io.BytesIO()
-                            canvas.convert("RGB").save(logo_output, format="JPEG", quality=92, optimize=True)
-                            marked = logo_output.getvalue()
-
-                        safe_base = Path(item["label"]).stem.replace(" ", "_")[:48]
-                        outputs.append({
-                            "name": f"AI_EDITED_{safe_base}_{len(outputs)+1}.jpg",
-                            "source": item["label"],
-                            "bytes": marked,
-                            "created_month": usage_now["month"],
-                        })
-                    except Exception as exc:
-                        # One failed photo should not block the rest of the user's batch.
-                        errors.append(f'{item["label"]}: {str(exc)[:280]}')
-                    progress.progress(i / total, text=f"Batch progress: {i}/{total}")
-
-                st.session_state["ai_batch_last_errors"] = errors
-                st.session_state["ai_batch_last_success_count"] = sum(
-                    1 for out in outputs if out.get("created_month") == usage["month"]
-                )
-                st.rerun()
-            except ImportError:
-                st.error("OpenAI library install nahi hai. VS Code Terminal mein: python -m pip install --upgrade openai")
-            except Exception as exc:
-                st.error("AI batch start nahi ho saka. API key, billing, model access aur internet check karo.")
-                st.caption(f"Technical detail: {str(exc)[:500]}")
-
-    last_errors = st.session_state.get("ai_batch_last_errors", [])
-    if last_errors:
-        st.warning("Kuch batch items process nahi ho paye:")
-        for error in last_errors:
-            st.write(f"- {error}")
-
-    outputs = st.session_state.get("ai_generated_images", [])
-    if outputs:
-        st.divider()
-        st.subheader("AI-edited copies â€” originals unchanged")
-        zip_output = io.BytesIO()
-        with zipfile.ZipFile(zip_output, "w", zipfile.ZIP_DEFLATED) as archive:
-            for output in outputs:
-                archive.writestr(output["name"], output["bytes"])
-        st.download_button(
-            "Download all AI-edited photos (ZIP)",
-            data=zip_output.getvalue(),
-            file_name="CarPhotoStudio_AI_Edited_Photos.zip",
-            mime="application/zip",
-            key="batch_ai_download_all",
-        )
-        for i, output in enumerate(reversed(outputs)):
-            with st.expander(f'{output["name"]} â€¢ Source: {output["source"]}', expanded=(i == 0)):
-                st.image(output["bytes"], width="stretch")
-                st.download_button(
-                    "Download AI-edited JPG", data=output["bytes"],
-                    file_name=output["name"], mime="image/jpeg",
-                    key=f'batch_ai_generated_download_{len(outputs)-i-1}',
-                )
+    st.caption("LaMa background inpainting karta hai; yeh text-to-image generator nahi hai. Original files alag safe rahengi.")
 
 elif page == "Settings":
     st.header("Settings")
     st.info(
-        "AI Image Studio original files ko preserve karta hai. API key environment variable "
-        "OPENAI_API_KEY ya .streamlit/secrets.toml se padhi jaati hai."
+        "Local LaMa logo cleanup ke liye OpenAI API key ki zaroorat nahi hai. "
+        "Original files unchanged rehti hain aur edited copies alag download hoti hain."
     )
 
 
@@ -2231,5 +1376,4 @@ st.markdown(
     <span>CarPhotoStudio Â· Showroom workspace</span><span>Original files stay separate from edited copies</span></div>""",
     unsafe_allow_html=True,
 )
-
 
