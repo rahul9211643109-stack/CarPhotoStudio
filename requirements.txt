@@ -7,6 +7,6 @@ google-api-python-client
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
-PyMuPDF
 opencv-python-headless
 simple-lama-inpainting
+PyMuPDF==1.26.5
