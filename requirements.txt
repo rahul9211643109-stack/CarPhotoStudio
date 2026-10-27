@@ -9,4 +9,4 @@ google-auth-oauthlib
 google-auth-httplib2
 opencv-python-headless
 simple-lama-inpainting
-PyMuPDF==1.26.5
+pymupdf==1.26.5
